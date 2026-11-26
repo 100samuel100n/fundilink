@@ -8,8 +8,8 @@ import type { DemoAccount } from '@fundilink/sdk';
 import { Button, Card, Chip, TextField } from './ui';
 import { Icon } from './Icon';
 import { Logo } from './Logo';
+import { homeFor, safeNext } from '@/lib/routes';
 
-const ADMIN = ['super_admin', 'platform_admin', 'operations_manager', 'verification_officer', 'finance_officer', 'support_agent', 'dispute_officer', 'content_manager', 'marketing_manager', 'analyst'];
 
 export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
   const router = useRouter();
@@ -42,8 +42,8 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
       const s = mode === 'register'
         ? await api.register({ fullName: f.fullName, phone: f.phone, email: f.email || undefined, password: f.password || undefined, otp: f.otp, role })
         : await api.login({ identifier: f.phone || f.email, password: useOtp ? undefined : f.password, otp: useOtp ? f.otp : undefined });
-      const next = sp.get('next');
-      router.replace(next && next.startsWith('/') ? next : s.roles.some((r) => ADMIN.includes(r)) ? '/admin' : s.roles.includes('professional') && !s.roles.includes('customer') ? '/professional' : role === 'professional' && mode === 'register' ? '/professional/onboarding' : '/app');
+      const next = safeNext(sp.get('next'));
+router.replace(next ?? (mode === 'register' && role === 'professional' && !s.roles.includes('customer') ? '/professional/onboarding' : homeFor(s.roles)));
     } catch (x: any) { setErr(x.message); }
     setBusy(false);
   };

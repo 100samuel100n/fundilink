@@ -6,11 +6,16 @@ import { useAuth } from '@/lib/auth';
 import { SITE } from '@/lib/site';
 import { Icon } from './Icon';
 import { Logo } from './Logo';
+import { homeFor } from '@/lib/routes';
 
 export function Header() {
   const [open, setOpen] = useState(false);
   const path = usePathname();
-  const { ready, session, isPro, isAdmin, signOut } = useAuth();
+
+  const { ready, session, roles, isCustomer, isPro, isAdmin, signOut } = useAuth();
+  const inPro = path.startsWith('/professional');
+  const home = isPro && inPro ? '/professional' : homeFor(roles);
+
   const cur = (h: string) => (path === h || (h !== '/' && path.startsWith(h)) ? 'page' : undefined);
   return (
     <header className="hdr">
@@ -26,10 +31,11 @@ export function Header() {
         </nav>
         <span className="spacer" />
         {!ready ? null : session ? (
-          <>
-            <Link className="btn sm secondary" href={isAdmin ? '/admin' : isPro ? '/professional' : '/app'}>My account</Link>
-            <button className="btn sm ghost" onClick={() => signOut()}>Sign out</button>
-          </>
+         <>
+  <Link className="btn sm secondary" href={home}>My account</Link>
+  {isCustomer && isPro && !isAdmin ? <Link className="btn sm ghost" href={inPro ? '/app' : '/professional'}>{inPro ? 'Customer view' : 'Professional view'}</Link> : null}
+  <button className="btn sm ghost" onClick={() => signOut()}>Sign out</button>
+</>
         ) : (
           <>
             <Link className="btn sm ghost" href="/login">Sign in</Link>

@@ -1,6 +1,7 @@
 'use client';
 import React from 'react';
 import Link from 'next/link';
+import { Icon, type IconName } from './Icon';
 import { kes, STATUS_LABEL, STATUS_TONE, type Tone } from '@fundilink/sdk';
 
 export const cx = (...a: (string | false | null | undefined)[]) => a.filter(Boolean).join(' ');
@@ -54,17 +55,43 @@ export function Skeleton({ h = 80, n = 1 }: { h?: number; n?: number }) {
 export function Empty({ title, body, action }: { title: string; body?: string; action?: React.ReactNode }) {
   return <div className="empty"><h3>{title}</h3>{body ? <p className="muted">{body}</p> : null}{action}</div>;
 }
-export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
-  const e = error as any;
-  const forbidden = e?.status === 403;
+export function StateCard({ icon = 'shield', tone = 'info', title, body, actions, children }: {
+  icon?: IconName; tone?: 'info' | 'warn' | 'bad' | 'good'; title: string; body?: React.ReactNode; actions?: React.ReactNode; children?: React.ReactNode;
+}) {
   return (
-    <div className="errbox" role="alert">
-      <h3>{forbidden ? 'You do not have access to this' : 'Something went wrong'}</h3>
-      <p className="muted">{forbidden ? 'Your role does not include this permission. Ask a Super Admin if you need it.' : e?.message ?? 'Please try again.'}</p>
-      {onRetry && !forbidden ? <Button tone="secondary" onClick={onRetry}>Try again</Button> : null}
+    <div className={cx('state', tone)} role={tone === 'bad' ? 'alert' : 'status'}>
+      <span className="state-ico" aria-hidden="true"><Icon name={icon} size={26} /></span>
+      <h3>{title}</h3>
+      {body ? <p className="muted">{body}</p> : null}
+      {children}
+      {actions ? <div className="state-actions">{actions}</div> : null}
     </div>
   );
 }
+
+type Fix = { icon: IconName; tone: 'info' | 'warn' | 'bad'; title: string; body: string; href?: string; cta?: string };
+/** Turns an API failure into a specific reason and a next step. Never names internal roles or permissions. */
+function explain(status: number | undefined, message: string): Fix {
+  const m = (message ?? '').toLowerCase();
+  if (status === 403) {
+    if (m.includes('no professional profile')) return { icon: 'user', tone: 'info', title: 'Finish setting up your professional profile', body: 'This section needs a professional profile. It takes a few minutes: tell us what you do, where you work and which services you offer.', href: '/professional/onboarding', cta: 'Continue setup' };
+    if (m.includes('business account')) return { icon: 'building', tone: 'info', title: 'Team tools are for business accounts', body: 'You are registered as an individual professional, so team management is switched off. Business accounts can add technicians, assign jobs and track each person’s performance.', href: '/contact', cta: 'Ask about a business account' };
+    if (m.includes('wallet')) return { icon: 'wallet', tone: 'info', title: 'Your wallet opens once you are verified', body: 'Wallets are created for verified professionals so earnings can be paid out safely. Complete your verification to unlock it.', href: '/professional/verification', cta: 'Go to verification' };
+    return { icon: 'lock', tone: 'info', title: 'This section is restricted', body: 'It is limited to people with specific responsibilities. If your work needs it, ask your team lead to arrange access, or contact support and we will help.', href: '/contact', cta: 'Contact support' };
+  }
+  if (status === 404) return { icon: 'search', tone: 'info', title: 'We could not find that', body: 'It may have been moved or removed.', href: '/', cta: 'Go home' };
+  if (status === 429) return { icon: 'clock', tone: 'warn', title: 'Too many attempts', body: 'Please wait a minute and try again.' };
+  return { icon: 'alertCircle', tone: 'bad', title: 'Something went wrong', body: message || 'Please try again in a moment.' };
+}
+export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
+  const e = error as any;
+  const f = explain(e?.status, e?.message);
+  return (
+    <StateCard icon={f.icon} tone={f.tone} title={f.title} body={f.body}
+      actions={<>{f.href ? <LinkButton href={f.href}>{f.cta ?? 'Continue'}</LinkButton> : null}{onRetry && e?.status !== 403 ? <Button tone="secondary" onClick={onRetry}>Try again</Button> : null}</>} />
+  );
+}
+
 /** Renders loading / error / empty / data in one place. */
 export function Async<T>({ state, skeleton, empty, children }: { state: { data?: T; error?: Error; loading: boolean; reload: () => void }; skeleton?: React.ReactNode; empty?: (d: T) => boolean; children: (d: T) => React.ReactNode }) {
   if (state.loading) return <>{skeleton ?? <Skeleton h={90} n={3} />}</>;

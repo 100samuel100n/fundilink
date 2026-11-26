@@ -1,47 +1,23 @@
 import type { MetadataRoute } from 'next';
-import { SITE_URL } from '@/lib/api';
+import { COUNTIES_FEATURED, slugify } from '@fundilink/sdk';
 import { getCategories, getSearch } from '@/lib/server';
-import { COUNTIES_FEATURED } from '@fundilink/sdk';
+import { abs } from '@/lib/seo';
 
-// 1. Skip static generation during `next build` and render on request
-export const dynamic = 'force-dynamic';
-
-// Helper to prevent hanging if the backend API is slow or unreachable
-function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
-  ]);
-}
+export const revalidate = 3600;
+type Freq = MetadataRoute.Sitemap[number]['changeFrequency'];
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  // 2. Fail fast after 5 seconds and fall back to static routes
-  const [cats, pros] = await Promise.all([
-    withTimeout(getCategories(), 5000, []),
-    withTimeout(getSearch({ limit: 100, sort: 'rating' }), 5000, { results: [] }),
-  ]);
-
+  const [cats, pros] = await Promise.all([getCategories(), getSearch({ limit: 100, sort: 'rating' })]);
   const now = new Date();
-  const fixed = [
-    '',
-    '/explore',
-    '/services',
-    '/locations',
-    '/how-it-works',
-    '/for-professionals',
-    '/for-businesses',
-    '/about',
-    '/help',
-    '/safety',
-    '/contact',
-    '/terms',
-    '/privacy',
-  ];
-
+  const e = (path: string, priority: number, changeFrequency: Freq) => ({ url: abs(path), lastModified: now, changeFrequency, priority });
+  const fixed: [string, number, Freq][] = [['/', 1, 'daily'], ['/explore', 0.9, 'daily'], ['/services', 0.9, 'weekly'], ['/locations', 0.8, 'weekly'], ['/emergency', 0.7, 'monthly'],
+    ['/for-professionals', 0.7, 'monthly'], ['/for-businesses', 0.6, 'monthly'], ['/how-it-works', 0.5, 'monthly'], ['/about', 0.5, 'monthly'], ['/safety', 0.5, 'monthly'],
+    ['/help', 0.5, 'monthly'], ['/contact', 0.4, 'yearly'], ['/terms', 0.3, 'yearly'], ['/privacy', 0.3, 'yearly']];
   return [
-    ...fixed.map((p) => ({ url: `${SITE_URL}${p}`, lastModified: now })),
-    ...(cats ?? []).map((c) => ({ url: `${SITE_URL}/explore/${c.slug}`, lastModified: now })),
-    ...COUNTIES_FEATURED.map((c) => ({ url: `${SITE_URL}/locations/${c.toLowerCase()}`, lastModified: now })),
-    ...(pros?.results ?? []).map((p) => ({ url: `${SITE_URL}/professionals/${p.slug}`, lastModified: now })),
+    ...fixed.map(([p, pr, f]) => e(p, pr, f)),
+    ...(cats ?? []).map((c) => e(`/explore/${c.slug}`, 0.8, 'weekly')),
+    ...COUNTIES_FEATURED.map((c) => e(`/locations/${slugify(c)}`, 0.8, 'weekly')),
+    ...(cats ?? []).flatMap((c) => COUNTIES_FEATURED.map((k) => e(`/explore/${c.slug}/${slugify(k)}`, 0.7, 'weekly'))),
+    ...(pros?.results ?? []).map((p) => e(`/professionals/${p.slug}`, 0.6, 'weekly')),
   ];
 }

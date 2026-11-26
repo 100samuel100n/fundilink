@@ -312,3 +312,19 @@ td a { color: var(--brand-dark); font-weight: 600; }
 .wc-amount { font-family: var(--f-display); font-size: clamp(2.5rem, 7vw, 3.5rem); font-weight: 800; letter-spacing: -.04em; margin: 10px 0 4px; font-variant-numeric: tabular-nums; } .wc-note { color: #C5D2E2; max-width: 560px; font-size: .92rem; margin: 0 0 18px; }
 .btn.wc-btn { background: #fff; color: #0B1F33; box-shadow: 0 10px 22px -8px rgba(0,0,0,.5); } .btn.wc-btn:hover { background: #E8F7F4; }
 @media (prefers-reduced-motion: reduce) { .mp-check circle, .mp-check path { animation: none; stroke-dashoffset: 0; } }
+
+
+.state { max-width: 580px; margin: 8px auto; text-align: center; padding: 36px 24px; border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--surface); }
+.state h3 { margin: 14px 0 6px; font-size: 1.2rem; }
+.state p { margin: 0 auto 4px; max-width: 46ch; line-height: 1.55; }
+.state-ico { display: inline-flex; width: 56px; height: 56px; align-items: center; justify-content: center; border-radius: 50%; background: var(--info-bg); color: var(--info-fg); }
+.state.warn .state-ico { background: var(--warn-bg); color: var(--warn-fg); }
+.state.bad .state-ico { background: var(--bad-bg); color: var(--bad-fg); }
+.state.good .state-ico { background: var(--good-bg); color: var(--good-fg); }
+.state-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 20px; }
+.state-steps { list-style: none; margin: 22px auto 0; padding: 0; text-align: left; max-width: 480px; display: grid; gap: 8px; }
+.state-steps li { display: flex; gap: 12px; align-items: center; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--surface-2); }
+.state-steps li > :nth-child(2) { flex: 1; }
+.state-steps .dot { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line-strong); display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.state-steps li.done .dot { background: var(--good); border-color: var(--good); color: var(--on-brand); }
+.state-steps li.done { opacity: .75; }

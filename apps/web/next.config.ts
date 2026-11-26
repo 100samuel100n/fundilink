@@ -11,5 +11,8 @@ const config: NextConfig = {
   poweredByHeader: false,
   typescript: { ignoreBuildErrors: true },
   eslint: { ignoreDuringBuilds: true },
+    async headers() {
+    return [{ source: '/:section(app|professional|admin|enterprise|auth|login|register)/:path*', headers: [{ key: 'X-Robots-Tag', value: 'noindex, nofollow, noarchive' }] }];
+  },
 };
 export default config;

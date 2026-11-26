@@ -2,7 +2,8 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { kes, PRICING_LABEL } from '@fundilink/sdk';
 import { getProfile } from '@/lib/server';
-import { SITE_URL } from '@/lib/api';
+import { abs, breadcrumb, pageMeta } from '@/lib/seo';
+import { JsonLd } from '@/components/JsonLd';
 import { Avatar, Badge, Card, Stars } from '@/components/ui';
 import { ProfileActions } from '@/components/ProfileActions';
 import { MapLazy } from '@/components/MapLazy';
@@ -19,9 +20,15 @@ type P = { params: Promise<{ slug: string }> };
 export async function generateMetadata({ params }: P): Promise<Metadata> {
   const { slug } = await params;
   const p = await getProfile(slug);
-  if (!p) return { title: 'Professional not found' };
+  if (!p) return { title: 'Professional not found', robots: { index: false, follow: false } };
   const n = p.businessName ?? p.name;
-  return { title: `${n}${p.headline ? `: ${p.headline}` : ''}`, description: p.bio?.slice(0, 155) ?? `${n} on FundiLink. ${p.stats.reviews} reviews, ${p.stats.completedJobs} completed jobs.`, alternates: { canonical: `/professionals/${slug}` } };
+  const where = p.serviceAreas.map((a) => a.town ?? a.county).filter(Boolean).slice(0, 2).join(', ');
+  const bio = p.bio?.replace(/\s+/g, ' ').trim().slice(0, 155);
+  return pageMeta({
+    title: `${n}${p.headline ? `: ${p.headline}` : ''}${where ? ` in ${where}` : ''}`,
+    description: bio || `${n} on FundiLink${where ? `, serving ${where}` : ''}. ${p.stats.reviews} reviews, ${p.stats.completedJobs} completed jobs. Book and pay securely.`,
+    path: `/professionals/${slug}`,
+  });
 }
 
 export default async function ProfilePage({ params }: P) {
@@ -29,11 +36,14 @@ export default async function ProfilePage({ params }: P) {
   const p = await getProfile(slug);
   if (!p) notFound();
   const n = p.businessName ?? p.name;
-  const ld = {
-    '@context': 'https://schema.org', '@type': 'LocalBusiness', name: n, url: `${SITE_URL}/professionals/${slug}`, description: p.bio ?? p.headline ?? undefined,
-    image: p.logoUrl ?? undefined, areaServed: p.serviceAreas.map((a) => a.town ?? a.county),
-    ...(p.reviews.length > 0 && p.stats.reviews > 0 ? { aggregateRating: { '@type': 'AggregateRating', ratingValue: p.stats.rating, reviewCount: p.stats.reviews } } : {}),
-  };
+  const areas = p.serviceAreas.map((a) => a.town ?? a.county).filter(Boolean) as string[];
+const ld = {
+  '@context': 'https://schema.org', '@type': 'ProfessionalService', '@id': abs(`/professionals/${slug}#business`), name: n, url: abs(`/professionals/${slug}`),
+  description: p.bio ?? p.headline ?? undefined, image: p.logoUrl ?? undefined,
+  address: { '@type': 'PostalAddress', addressCountry: 'KE', ...(areas[0] ? { addressLocality: areas[0] } : {}) },
+  areaServed: areas.map((a) => ({ '@type': 'Place', name: a })),
+  ...(p.reviews.length > 0 && p.stats.reviews > 0 ? { aggregateRating: { '@type': 'AggregateRating', ratingValue: p.stats.rating, reviewCount: p.stats.reviews } } : {}),
+};
   const bd = p.ratingBreakdown ?? {};
   // The headline rating must agree with the reviews a visitor can actually read.
   const reviewCount = p.reviews.length > 0 ? p.stats.reviews : 0;
@@ -42,7 +52,7 @@ export default async function ProfilePage({ params }: P) {
   const has = (k: string) => p.verification.includes(k);
   return (
     <main id="main" className="wrap section">
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(ld).replace(/</g, '\\u003c') }} />
+     <JsonLd data={[ld, breadcrumb([{ name: 'Home', path: '/' }, { name: 'Find a professional', path: '/explore' }, { name: n, path: `/professionals/${slug}` }])]} />
       <div className="split ps">
         <div className="stack" style={{ gap: 20 }}>
           {/* A. identity */}
