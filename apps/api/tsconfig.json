@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "CommonJS", "moduleResolution": "node10", "lib": ["ES2023"],
+    "outDir": "dist", "rootDir": "src", "strict": true, "skipLibCheck": true, "esModuleInterop": true,
+    "experimentalDecorators": true, "emitDecoratorMetadata": true, "rewriteRelativeImportExtensions": true,
+    "resolveJsonModule": true, "sourceMap": false, "types": ["node"]
+  },
+  "include": ["src/**/*"]
+}

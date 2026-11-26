@@ -1,0 +1,3 @@
+import { Page } from '@/components/Page';
+export const metadata = { title: 'About' };
+export default function P() { return <Page title="About FundiLink" lead="A marketplace and on-demand platform for skilled professionals, starting in Kenya."><p>FundiLink coordinates the whole service transaction: discovery, verification, booking, payment, completion, settlement and reputation. We built it so customers can hire with confidence and professionals can build a real business.</p><p>Designed Kenya-first for variable connectivity and lower-end phones, with currencies, payment providers, languages and licensing rules configurable per country for international expansion.</p></Page>; }

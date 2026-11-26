@@ -1,0 +1,13 @@
+{
+  "name": "@fundilink/domain",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
+  "devDependencies": { "typescript": "^5.8.0" }
+}

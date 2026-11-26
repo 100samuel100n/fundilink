@@ -1,0 +1,34 @@
+{
+  "name": "fundilink-web",
+  "private": true,
+  "version": "0.3.0",
+  "description": "FundiLink web platform: public site, customer, professional, admin and enterprise portals, plus the shared API",
+  "workspaces": [
+    "packages/*",
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "build": "node scripts/run.mjs build",
+    "start": "node scripts/run.mjs start",
+    "prepare": "npm run build -w @fundilink/domain",
+    "test": "node --experimental-strip-types --test packages/domain/test/*.test.ts",
+    "build:api": "npm run build -w @fundilink/domain && npm run build -w @fundilink/api",
+    "build:web": "npm run build -w @fundilink/web",
+    "db:migrate": "node scripts/db.mjs migrate",
+    "db:seed": "node scripts/db.mjs seed",
+    "db:reset": "node scripts/db.mjs reset",
+    "seed:demo": "npm run build:api && npm run seed:demo -w @fundilink/api",
+    "dev:api": "npm run build -w @fundilink/domain && npm run start:dev -w @fundilink/api",
+    "dev:web": "npm run dev -w @fundilink/web",
+    "start:api": "npm run start:prod -w @fundilink/api",
+    "start:web": "npm run start -w @fundilink/web"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "pg": "^8.12.0",
+    "typescript": "^5.8.0"
+  }
+}
