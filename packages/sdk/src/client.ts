@@ -110,6 +110,7 @@ export class FundiLink {
 
   /* ---------------- bookings ---------------- */
   createBooking = (i: T.CreateBookingInput) => this.post<{ booking: T.Booking; invoice: T.Invoice }>('/bookings', i);
+  quotePaymentModes = (q: { professionalId: string; subtotal: number; kind: string; professionalServiceId?: string }) => this.get<{ modes: T.PaymentMode[] }>(`/bookings/payment-modes${qs(q)}`);
   bookings = (as: 'customer' | 'professional' = 'customer') => this.get<T.Booking[]>(`/bookings${qs({ as })}`);
   booking = (id: string) => this.get<T.BookingDetail>(`/bookings/${id}`);
   transition = (id: string, to: T.BookingStatus, extra: { reason?: string; lat?: number; lng?: number; pin?: string } = {}) =>

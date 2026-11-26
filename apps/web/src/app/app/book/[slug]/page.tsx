@@ -32,7 +32,7 @@ function Wizard({ p }: { p: ProProfile }) {
   const [addr, setAddr] = useState('');
   const [pt, setPt] = useState<{ lat: number; lng: number } | null>(null);
   const [busy, setBusy] = useState(false);
-  const modes = p.paymentModes?.length ? p.paymentModes : (['escrow'] as ('escrow' | 'direct')[]);
+  const [modes, setModes] = useState<('escrow' | 'direct')[]>(p.paymentModes?.length ? p.paymentModes : ['escrow']);
   const [mode, setMode] = useState<'escrow' | 'direct'>(modes[0]);
   const [dmethod, setDmethod] = useState<'cash' | 'mpesa'>('cash');
   const locs = useAsync(() => api.locations().catch(() => []), []);
@@ -48,6 +48,17 @@ function Wizard({ p }: { p: ProProfile }) {
   const hasQty = !!price && price.model in QTY_LABEL;
   const lines: LineInput[] = price && unit ? [{ label: svc!.name, kind: 'labour', quantity: hasQty ? qty : 1, unitAmount: Math.max(unit, price.min || 0) }] : [];
   const subtotal = lines.reduce((s, l) => s + l.quantity * l.unitAmount, 0);
+
+    useEffect(() => {
+    if (!subtotal) return;
+    const h = setTimeout(() => {
+      api.quotePaymentModes({ professionalId: p.id, subtotal, kind, professionalServiceId: svc?.id })
+        .then((r) => { setModes(r.modes); setMode((m) => (r.modes.includes(m) ? m : r.modes[0])); })
+        .catch(() => { /* keep what the profile page offered; the server re-checks at booking */ });
+    }, 400);
+    return () => clearTimeout(h);
+  }, [subtotal, kind, svc?.id, p.id]);
+  
   const quotationOnly = !!price && (price.model === 'quotation' || price.model === 'project' || price.amount == null);
   const labels = ['Service', 'Describe', 'When & where', 'Confirm'];
 

@@ -352,22 +352,32 @@ export class PaymentService {
   }
 
   /** Customer confirmed (or window lapsed): move money from "held" to payable-out via a settlement record. */
-  async queueSettlement(bookingId: string) {
+   async queueSettlement(bookingId: string) {
+    let recovered = 0; let proId = '';
     await this.db.tx(async (c) => {
       const b = (await c.query('SELECT * FROM bookings WHERE id=$1 FOR UPDATE', [bookingId])).rows[0];
       if (!b || b.status !== 'completed' || b.payment_mode !== 'escrow') return;
+      proId = b.professional_id;
       await this.bookings.move(c, bookingId, 'settlement_pending', 'system', null, {});
+      // If the professional owes pay-on-site commission (negative wallet), clear it from this in-app payout first.
+      const wb = Number((await c.query(`SELECT COALESCE(SUM(credit) - SUM(debit), 0)::bigint AS b FROM ledger_entries WHERE account=$1`, [walletAccount(b.professional_id)])).rows[0].b);
+      const net = Number(b.professional_net);
+      recovered = Math.max(0, Math.min(-wb, net));
+      if (recovered > 0) await postLedger(c, `wallet-netting:${b.id}`, 'wallet_netting', b.id, [{ account: proAcct(b.professional_id), debit: recovered }, { account: walletAccount(b.professional_id), credit: recovered }]);
+      const pay = net - recovered;
+      if (pay === 0) { await this.bookings.move(c, bookingId, 'settled', 'system', null, {}); return; } // the whole payout cleared the debt
       const acct = (await c.query('SELECT id FROM payout_accounts WHERE professional_id=$1 AND active LIMIT 1', [b.professional_id])).rows[0];
       const s = (await c.query(
         `INSERT INTO settlements (professional_id, payout_account_id, amount, idempotency_key) VALUES ($1,$2,$3,$4) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id`,
-        [b.professional_id, acct?.id ?? null, b.professional_net, `settle:${bookingId}`])).rows[0];
-      if (s) await c.query('INSERT INTO settlement_items (settlement_id, booking_id, amount) VALUES ($1,$2,$3)', [s.id, bookingId, b.professional_net]);
+        [b.professional_id, acct?.id ?? null, pay, `settle:${bookingId}`])).rows[0];
+      if (s) await c.query('INSERT INTO settlement_items (settlement_id, booking_id, amount) VALUES ($1,$2,$3)', [s.id, bookingId, pay]);
     });
+    if (recovered > 0) void this.notifier.send(await this.notifier.proUsers(proId), { template: 'wallet_netting', title: 'Wallet balance recovered', body: `${kes(recovered)} from this job cleared the commission you owed on pay-on-site jobs.`, data: { bookingId } }).catch(() => {});
     // try to pay straight away; the housekeeping job retries anything that does not go through
     const s = await this.db.one<any>(`SELECT id FROM settlements WHERE idempotency_key=$1`, [`settle:${bookingId}`]);
     if (s) await this.processSettlement(s.id).catch((e) => this.log.warn(`instant settlement ${s.id}: ${e}`));
   }
-
+  
   /** Worker: pay out pending settlements through the provider. Claimed atomically so two workers can never pay twice. */
   async processSettlement(settlementId: string) {
     const s = await this.db.one<any>(

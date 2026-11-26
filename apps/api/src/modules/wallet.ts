@@ -27,15 +27,24 @@ export class WalletService {
     return { minTopup, maxTopup, minBalance, lowAlert };
   }
 
+    /** Commission already owed on pay-on-site jobs that are accepted but not yet charged. */
+  async openExposure(professionalId: string, c?: PoolClient): Promise<number> {
+    const q = `SELECT COALESCE(SUM(commission + customer_fee), 0)::bigint AS e FROM bookings
+                WHERE professional_id=$1 AND payment_mode='direct' AND commission_charged_at IS NULL
+                  AND status IN ('confirmed','scheduled','en_route','arrived','in_progress','awaiting_completion','completed','disputed')`;
+    const row = c ? (await c.query(q, [professionalId])).rows[0] : await this.db.one<any>(q, [professionalId]);
+    return Number(row.e);
+  }
+
   async balance(professionalId: string, c?: PoolClient): Promise<number> {
     const q = `SELECT COALESCE(SUM(credit) - SUM(debit), 0)::bigint AS b FROM ledger_entries WHERE account=$1`;
     const row = c ? (await c.query(q, [walletAccount(professionalId)])).rows[0] : await this.db.one<any>(q, [walletAccount(professionalId)]);
     return Number(row.b);
   }
 
-  async gate(professionalId: string, commission: number, c?: PoolClient): Promise<WalletGate> {
-    const [bal, s] = await Promise.all([this.balance(professionalId, c), this.settings()]);
-    return walletGate(bal, commission, s.minBalance);
+   async gate(professionalId: string, commission: number, c?: PoolClient): Promise<WalletGate> {
+    const [bal, s, owed] = await Promise.all([this.balance(professionalId, c), this.settings(), this.openExposure(professionalId, c)]);
+    return walletGate(bal - owed, commission, s.minBalance); // money already promised to the platform is not spendable twice
   }
 
   async statement(professionalId: string, limit = 50) {
@@ -45,11 +54,12 @@ export class WalletService {
         WHERE e.account=$1 ORDER BY t.id DESC LIMIT $2`, [walletAccount(professionalId), limit]);
   }
 
-  async summary(professionalId: string) {
-    const [balance, s] = await Promise.all([this.balance(professionalId), this.settings()]);
+    async summary(professionalId: string) {
+    const [balance, s, committed] = await Promise.all([this.balance(professionalId), this.settings(), this.openExposure(professionalId)]);
+    const available = balance - committed;
     return {
-      balance, minBalance: s.minBalance, lowAlert: s.lowAlert, minTopup: s.minTopup, maxTopup: s.maxTopup,
-      low: balance <= s.lowAlert, canTakeDirect: balance > s.minBalance,
+      balance, committed, available, minBalance: s.minBalance, lowAlert: s.lowAlert, minTopup: s.minTopup, maxTopup: s.maxTopup,
+      low: available <= s.lowAlert, canTakeDirect: available > s.minBalance,
     };
   }
 }

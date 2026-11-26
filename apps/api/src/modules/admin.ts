@@ -101,6 +101,21 @@ export class AdminController {
     return { ok: true, note: 'Applies to new bookings only; existing bookings keep the commission frozen at creation.' };
   }
 
+    @Perm('commission.write') @Put('commission/rule')
+  async commissionRule(@CurrentUser() u: AuthUser, @Body() b: unknown, @Req() req: any) {
+    const i = parse(z.object({
+      categoryId: z.number().int().optional(), kind: z.enum(['instant', 'scheduled', 'quotation', 'emergency']).optional(), organizationId: z.string().uuid().optional(),
+      commissionBps: z.number().int().min(0).max(3000), customerFeeBps: z.number().int().min(0).max(2000).default(0), active: z.boolean().default(true), reason: z.string().min(5),
+    }), b);
+    if (i.categoryId === undefined && i.kind === undefined && i.organizationId === undefined) throw new BadRequestException('Use the default commission setting for a platform-wide rate');
+    await this.db.tx(async (c) => {
+      await c.query(`UPDATE commission_rules SET active=false WHERE category_id IS NOT DISTINCT FROM $1::int AND kind IS NOT DISTINCT FROM $2::booking_kind AND organization_id IS NOT DISTINCT FROM $3::uuid`, [i.categoryId ?? null, i.kind ?? null, i.organizationId ?? null]);
+      if (i.active) await c.query(`INSERT INTO commission_rules (category_id, kind, organization_id, commission_bps, customer_fee_bps) VALUES ($1,$2,$3,$4,$5)`, [i.categoryId ?? null, i.kind ?? null, i.organizationId ?? null, i.commissionBps, i.customerFeeBps]);
+      await this.audit.log(u, { action: 'commission.rule', kind: 'commission_rule', id: `${i.categoryId ?? '*'}:${i.kind ?? '*'}:${i.organizationId ?? '*'}`, after: i, reason: i.reason, ip: req.ip }, c);
+    });
+    return { ok: true, note: 'Applies to new bookings only; existing bookings keep the commission frozen at creation.' };
+  }
+
   @Perm('activation_fees.write') @Put('activation-fee')
   async activation(@CurrentUser() u: AuthUser, @Body() b: unknown) {
     const i = parse(z.object({ amount: z.number().int().min(0), enabled: z.boolean(), founding_waiver: z.boolean().default(true), reason: z.string().min(5) }), b);

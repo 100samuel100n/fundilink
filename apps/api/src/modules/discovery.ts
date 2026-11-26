@@ -2,6 +2,7 @@ import { Controller, Get, Injectable, NotFoundException, Param, Query } from '@n
 import { z } from 'zod';
 import { Candidate, DEFAULT_WEIGHTS, rank, Weights } from '@fundilink/domain';
 import { Db, Public, parse } from '../common/core.ts';
+import { WalletService } from './wallet.ts';
 
 const SearchQ = z.object({
   q: z.string().trim().optional(),
@@ -22,7 +23,7 @@ const SearchQ = z.object({
 
 @Injectable()
 export class DiscoveryService {
-  constructor(private db: Db) {}
+    constructor(private db: Db, private wallet: WalletService) {}
 
   async weights(): Promise<Weights> {
     const r = await this.db.one<any>(`SELECT value FROM platform_settings WHERE key='ranking.weights'`);
@@ -161,18 +162,17 @@ export class DiscoveryService {
   }
 
   /** Which payment models the customer is offered. Pay-on-site needs the pro's opt-in AND a funded wallet (their balance is never revealed). */
-  async paymentModes(p: any): Promise<('escrow' | 'direct')[]> {
+   async paymentModes(p: any): Promise<('escrow' | 'direct')[]> {
     const flag = async (k: string) => { const r = await this.db.one<any>('SELECT value FROM platform_settings WHERE key=$1', [k]); return r ? r.value === true || r.value === 'true' : true; };
+    const [escrowOn, directOn] = await Promise.all([flag('payments.escrow_enabled'), flag('payments.direct_enabled')]);
+    const typical = await this.wallet.setting('wallet.typical_commission_minor', 20_000); // KSh 200: what a typical job's commission looks like
+    const directOk = directOn && p.accepts_direct_payment !== false && (await this.wallet.gate(p.id, typical)).ok;
     const out: ('escrow' | 'direct')[] = [];
-    if (p.accepts_escrow_payment !== false && (await flag('payments.escrow_enabled'))) out.push('escrow');
-    if (p.accepts_direct_payment !== false && (await flag('payments.direct_enabled'))) {
-      const bal = await this.db.one<any>(`SELECT COALESCE(SUM(credit)-SUM(debit),0)::bigint b FROM ledger_entries WHERE account=$1`, [`PRO_WALLET:${p.id}`]);
-      const min = await this.db.one<any>(`SELECT value FROM platform_settings WHERE key='wallet.min_balance_minor'`);
-      if (Number(bal?.b ?? 0) > Number(min?.value ?? 0) + 20_000) out.push('direct'); // enough to cover a typical commission
-    }
+    if (escrowOn && (p.accepts_escrow_payment !== false || !directOk)) out.push('escrow'); // in-app is the safety net
+    if (directOk) out.push('direct');
     return out.length ? out : ['escrow'];
   }
-
+  
   /** Up to three professionals side-by-side. */
   async compare(ids: string[]) {
     const rows = await this.db.query<any>(

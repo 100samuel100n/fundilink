@@ -3,7 +3,7 @@ import { PoolClient } from 'pg';
 import { randomInt } from 'node:crypto';
 import { z } from 'zod';
 import {
-  Actor, BookingStatus, buildInvoice, DEFAULT_FEES, haversineKm, transition, travelFee, LineItem, addonSplit, validateAddon,
+  Actor, BookingStatus, pct, buildInvoice, DEFAULT_FEES, haversineKm, transition, travelFee, LineItem, addonSplit, validateAddon,
 } from '@fundilink/domain';
 import { AuthUser, CurrentUser, Db, parse, sha256, Audit } from '../common/core.ts';
 import { WalletService } from './wallet.ts';
@@ -66,6 +66,30 @@ export class BookingService {
     return { id: c.id as string, code: c.code as string, discount: Math.max(0, Math.min(raw, cap)) };
   }
 
+    /** Most specific active rule wins: business account > category > booking type > platform default. */
+  async rule(kind: string, professionalServiceId?: string | null, organizationId?: string | null) {
+    return this.db.one<any>(
+      `SELECT r.commission_bps, r.customer_fee_bps FROM commission_rules r
+        WHERE r.active AND (r.kind IS NULL OR r.kind=$1::booking_kind)
+          AND (r.category_id IS NULL OR r.category_id = (SELECT s.category_id FROM professional_services ps JOIN services s ON s.id=ps.service_id WHERE ps.id=$2::uuid))
+          AND (r.organization_id IS NULL OR r.organization_id=$3::uuid)
+        ORDER BY (r.organization_id IS NOT NULL) DESC, (r.category_id IS NOT NULL) DESC, (r.kind IS NOT NULL) DESC, r.priority DESC, r.id DESC LIMIT 1`,
+      [kind, professionalServiceId ?? null, organizationId ?? null]);
+  }
+
+  /** Which payment options work for THIS job size. Yes/no only: the professional's wallet is never revealed. */
+  async modesFor(professionalId: string, subtotal: number, kind: string, professionalServiceId?: string) {
+    const pro = await this.db.one<any>(`SELECT id, accepts_escrow_payment, accepts_direct_payment FROM professional_profiles WHERE id=$1 AND status='active'`, [professionalId]);
+    if (!pro) throw new NotFoundException('Professional unavailable');
+    const k = ['instant', 'scheduled', 'quotation', 'emergency'].includes(kind) ? kind : 'instant';
+    const rule = await this.rule(k, professionalServiceId);
+    const commission = pct(Math.max(0, Math.round(subtotal)), rule?.commission_bps ?? DEFAULT_FEES.commissionBps);
+    const directOk = (await this.flag('payments.direct_enabled')) && pro.accepts_direct_payment !== false && (await this.wallet.gate(pro.id, commission)).ok;
+    const escrowOk = (await this.flag('payments.escrow_enabled')) && (pro.accepts_escrow_payment !== false || !directOk);
+    const modes = [escrowOk ? 'escrow' : null, directOk ? 'direct' : null].filter(Boolean) as ('escrow' | 'direct')[];
+    return { modes: modes.length ? modes : (['escrow'] as ('escrow' | 'direct')[]) };
+  }
+
   /** Which side of the booking is this user on? Business members count as the professional side. */
   async sideOf(b: { customer_id: string; professional_id: string }, userId: string): Promise<Actor | null> {
     if (b.customer_id === userId) return 'customer';
@@ -97,13 +121,17 @@ export class BookingService {
       if (!pro.accepts_direct_payment) throw new BadRequestException('This professional only accepts in-app payment.');
       if (i.couponCode) throw new BadRequestException('Promo codes apply to in-app payments only.');
     } else {
-      if (!(await this.flag('payments.escrow_enabled')) || !pro.accepts_escrow_payment) throw new BadRequestException('This professional is paid on site. Choose pay-on-site.');
+      if (!(await this.flag('payments.escrow_enabled'))) throw new BadRequestException('In-app payment is not available right now.');
     }
 
-    const rule = await this.db.one<any>(
-      `SELECT commission_bps, customer_fee_bps FROM commission_rules WHERE active AND (kind IS NULL OR kind=$1::booking_kind) ORDER BY priority DESC, id DESC LIMIT 1`, [i.kind]);
+        const rule = await this.rule(i.kind, i.professionalServiceId, i.organizationId);
     const fees = { ...DEFAULT_FEES, commissionBps: rule?.commission_bps ?? DEFAULT_FEES.commissionBps, customerFeeBps: mode === 'direct' ? 0 : rule?.customer_fee_bps ?? 0 }; // on-site jobs: the customer only ever pays the professional
     const inv = buildInvoice(lines, fees);
+    if (mode === 'escrow' && pro.accepts_escrow_payment === false) {
+  // Direct-only professionals are booked in-app only when pay-on-site can't work for this job (empty wallet, switched off).
+  const directPossible = (await this.flag('payments.direct_enabled')) && pro.accepts_direct_payment !== false && (await this.wallet.gate(pro.id, inv.commission + inv.customerFee)).ok;
+  if (directPossible) throw new BadRequestException('This professional is paid on site. Choose pay-on-site.');
+}
     // Promotions are funded from the platform's margin only (commission + customer fee): a coupon can never reduce the professional's pay.
     const promo = i.couponCode ? await this.coupon(u.id, i.couponCode, inv.serviceSubtotal, inv.platformRevenue) : null;
     const discount = promo?.discount ?? 0;
@@ -343,6 +371,11 @@ export class BookingController {
       ? this.db.query(`SELECT b.* FROM bookings b JOIN professional_profiles p ON p.id=b.professional_id WHERE p.user_id=$1 OR EXISTS (SELECT 1 FROM business_members m WHERE m.business_id=p.id AND m.user_id=$1) ORDER BY b.created_at DESC LIMIT 100`, [u.id])
       : this.db.query('SELECT * FROM bookings WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100', [u.id]);
   }
+
+    @Get('payment-modes') paymentModes(@Query('professionalId') professionalId: string, @Query('subtotal') subtotal: string, @Query('kind') kind = 'instant', @Query('professionalServiceId') serviceId?: string) {
+    return this.s.modesFor(professionalId, Number(subtotal) || 0, kind, serviceId);
+  }
+
 
   @Get(':id') async get(@CurrentUser() u: AuthUser, @Param('id') id: string) {
     const b = await this.db.one<any>('SELECT *, ST_Y(location::geometry) lat, ST_X(location::geometry) lng FROM bookings WHERE id=$1', [id]);
