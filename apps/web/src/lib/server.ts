@@ -4,10 +4,16 @@ import { API_URL } from './api';
 /** Server-side fetch for public pages. Never throws: pages render an empty state if the API is down. */
 async function pub<T>(path: string, revalidate = 120): Promise<T | null> {
   try {
-    const r = await fetch(`${API_URL}${path}`, { next: { revalidate } });
+    const r = await fetch(`${API_URL}${path}`, {
+      next: { revalidate },
+      signal: AbortSignal.timeout(5000),
+    });
     return r.ok ? ((await r.json()) as T) : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
+
 export const getCategories = () => pub<Category[]>('/discover/categories', 600);
 export const getProfile = (slug: string) => pub<ProProfile>(`/discover/professionals/${encodeURIComponent(slug)}`, 60);
 export function getSearch(p: SearchParams) {
