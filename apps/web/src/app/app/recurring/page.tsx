@@ -2,9 +2,10 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
-import { errMsg, getPosition, useAsync } from '@/lib/hooks';
+import { errMsg, useAsync } from '@/lib/hooks';
 import { useToast } from '@/lib/toast';
 import { Icon } from '@/components/Icon';
+import { AddressSearch } from '@/components/AddressSearch';
 import { Button, Card, Chip, PageTitle, Select, TextArea, TextField } from '@/components/ui';
 
 const FREQ = [['weekly', 'Weekly'], ['fortnightly', 'Every 2 weeks'], ['monthly', 'Monthly'], ['quarterly', 'Quarterly']] as const;
@@ -55,8 +56,9 @@ export default function Page() {
         <div className="grid g2"><Select label="Preferred day" value={day} onChange={(e) => setDay(e.target.value)} options={DAYS.map((d) => ({ value: d, label: d }))} />
           <Select label="Time of day" value={time} onChange={(e) => setTime(e.target.value)} options={[{ value: 'morning', label: 'Morning' }, { value: 'afternoon', label: 'Afternoon' }, { value: 'evening', label: 'Evening' }]} /></div>
         <div className="grid g2"><TextField label="Start date" type="date" value={start} onChange={(e) => setStart(e.target.value)} /><Select label="Contract length" value={term} onChange={(e) => setTerm(e.target.value)} options={TERMS.map(([v, l]) => ({ value: v, label: l }))} /></div>
-        <TextField label="Site address" value={address} onChange={(e) => setAddress(e.target.value)} />
-        <div className="row wrap-r"><Button tone="secondary" onClick={async () => { try { setPt(await getPosition()); } catch (e) { t.err(errMsg(e)); } }}><Icon name="pin" size={16} /> Pin site location</Button><span className="muted small">{pt ? `${pt.lat.toFixed(4)}, ${pt.lng.toFixed(4)}` : 'Required'}</span></div>
+        <AddressSearch label="Site address" value={address} near={pt}
+  onChange={(v) => { setAddress(v); setPt(null); }}
+  onPick={(p) => { setAddress(p.address); setPt({ lat: p.lat, lng: p.lng }); }} />
         <TextField label="Budget per visit in KSh (optional)" inputMode="decimal" value={budget} onChange={(e) => setBudget(e.target.value)} />
         <TextArea label="Anything the professional should know" hint="Size of the space, access, supplies, special requirements." value={notes} onChange={(e) => setNotes(e.target.value)} />
         <Button loading={busy} disabled={!address || !pt || !catId} onClick={submit}>Request quotations</Button>

@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Injectable, Param, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, Injectable, Param, Post, Put, Query } from '@nestjs/common';
 import { ConnectedSocket, MessageBody, OnGatewayConnection, SubscribeMessage, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
 import { JwtService } from '@nestjs/jwt';
 import type { Server, Socket } from 'socket.io';
@@ -138,6 +138,48 @@ export class AccountController {
     const i = parse(z.object({ label: z.string(), address: z.string(), lat: z.number(), lng: z.number(), notes: z.string().optional() }), b);
     return this.db.one('INSERT INTO saved_locations (user_id,label,address,location,notes) VALUES ($1,$2,$3,ST_SetSRID(ST_MakePoint($5,$4),4326)::geography,$6) RETURNING id', [u.id, i.label, i.address, i.lat, i.lng, i.notes ?? null]);
   }
+
+    @Put('locations/:id') async editLocation(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() b: unknown) {
+    const i = parse(z.object({ label: z.string().min(1).optional(), address: z.string().min(3).optional(), lat: z.number().optional(), lng: z.number().optional(), notes: z.string().nullable().optional() }), b);
+    const r = await this.db.one('UPDATE saved_locations SET label=COALESCE($3,label), address=COALESCE($4,address), location=CASE WHEN $5::float8 IS NULL OR $6::float8 IS NULL THEN location ELSE ST_SetSRID(ST_MakePoint($6::float8,$5::float8),4326)::geography END, notes=CASE WHEN $7::boolean THEN $8::text ELSE notes END WHERE id=$1 AND user_id=$2 RETURNING id', [id, u.id, i.label ?? null, i.address ?? null, i.lat ?? null, i.lng ?? null, i.notes !== undefined, i.notes ?? null]);
+    if (!r) throw new ForbiddenException();
+    return { ok: true };
+  }
+  @Delete('locations/:id') async removeLocation(@CurrentUser() u: AuthUser, @Param('id') id: string) {
+    await this.db.query('DELETE FROM saved_locations WHERE id=$1 AND user_id=$2', [id, u.id]);
+    return { ok: true };
+  }
+
+  /* ---- Address autocomplete (Kenya-biased, shared by customers, professionals and businesses) ---- */
+  private placeCache = new Map<string, { at: number; v: any }>();
+  private async geocode(path: string, params: Record<string, string>) {
+    const token = process.env.MAPBOX_TOKEN;
+    if (!token) throw new BadRequestException('Address search is not configured. Set MAPBOX_TOKEN on the API service.');
+    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${path}.json?${new URLSearchParams({ ...params, access_token: token })}`;
+    const hit = this.placeCache.get(url);
+    if (hit && Date.now() - hit.at < 300_000) return hit.v;
+    const r = await fetch(url);
+    if (!r.ok) throw new BadRequestException('Address search is unavailable right now');
+    const v: any = await r.json();
+    if (this.placeCache.size > 500) this.placeCache.clear();
+    this.placeCache.set(url, { at: Date.now(), v });
+    return v;
+  }
+  @Get('places/search') async placeSearch(@Query('q') q = '', @Query('lat') lat?: string, @Query('lng') lng?: string) {
+    const s = q.trim().slice(0, 120);
+    if (s.length < 2) return [];
+    const params: Record<string, string> = { country: 'ke', autocomplete: 'true', limit: '6', language: 'en', types: 'address,poi,neighborhood,locality,place' };
+    if (lat && lng && Number.isFinite(+lat) && Number.isFinite(+lng)) params.proximity = `${+lng},${+lat}`; // rank nearby results first
+    const j = await this.geocode(encodeURIComponent(s), params);
+    return (j.features ?? []).map((f: any) => ({ id: f.id, title: f.text, label: f.place_name, lng: f.center[0], lat: f.center[1] }));
+  }
+  @Get('places/reverse') async placeReverse(@Query('lat') lat: string, @Query('lng') lng: string) {
+    if (!Number.isFinite(+lat) || !Number.isFinite(+lng)) throw new BadRequestException('lat and lng are required');
+    const j = await this.geocode(`${+lng},${+lat}`, { limit: '1', language: 'en', types: 'address,poi,neighborhood,locality' });
+    const f = j.features?.[0];
+    return f ? { id: f.id, title: f.text, label: f.place_name, lat: +lat, lng: +lng } : null;
+  }
+  
   /** "Book again" loads the pro's CURRENT services and slots: never silently reuses an old price. */
   @Get('rebook/:bookingId') async rebook(@CurrentUser() u: AuthUser, @Param('bookingId') id: string) {
     const b = await this.db.one<any>('SELECT professional_id, address FROM bookings WHERE id=$1 AND customer_id=$2', [id, u.id]);

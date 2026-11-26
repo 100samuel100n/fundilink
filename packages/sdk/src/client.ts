@@ -156,6 +156,10 @@ export class FundiLink {
   savePro = (id: string) => this.post(`/saved/professionals/${id}`);
   locations = () => this.get<T.SavedLocation[]>('/locations');
   addLocation = (i: { label: string; address: string; lat: number; lng: number; notes?: string }) => this.post('/locations', i);
+  editLocation = (id: string, i: { label?: string; address?: string; lat?: number; lng?: number; notes?: string | null }) => this.put(`/locations/${id}`, i);
+  deleteLocation = (id: string) => this.del(`/locations/${id}`);
+  suggestPlaces = (q: string, near?: { lat: number; lng: number }) => this.get<T.PlaceSuggestion[]>(`/places/search${qs({ q, lat: near?.lat, lng: near?.lng })}`);
+  reversePlace = (lat: number, lng: number) => this.get<T.PlaceSuggestion | null>(`/places/reverse${qs({ lat, lng })}`);
   rebook = (bookingId: string) => this.get<{ professionalId: string; address: string; services: { id: string; name: string }[] }>(`/rebook/${bookingId}`);
   propertyHistory = (address: string) => this.get<{ completed_at: string; service: string; professional: string }[]>(`/property-history${qs({ address })}`);
 

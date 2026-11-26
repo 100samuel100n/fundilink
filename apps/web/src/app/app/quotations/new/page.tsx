@@ -2,8 +2,9 @@
 import React, { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { api } from '@/lib/api';
-import { errMsg, getPosition, useAsync } from '@/lib/hooks';
+import { errMsg, useAsync } from '@/lib/hooks';
 import { useToast } from '@/lib/toast';
+import { AddressSearch } from '@/components/AddressSearch';
 import { Button, Card, PageTitle, Select, TextArea, TextField } from '@/components/ui';
 
 function Form() {
@@ -30,8 +31,9 @@ function Form() {
         <TextField label="Project title" placeholder="Paint a 3-bedroom house" value={f.title} onChange={set('title')} />
         <Select label="Category" value={catId} onChange={set('categoryId')} options={(cats.data ?? []).map((c) => ({ value: c.id, label: c.name }))} />
         <TextArea label="Describe the work" hint="Size, condition, materials, deadlines." value={f.scope} onChange={set('scope')} />
-        <TextField label="Site address" value={f.address} onChange={set('address')} />
-        <div className="row wrap-r"><Button tone="secondary" onClick={async () => { try { setPt(await getPosition()); } catch (e) { t.err(errMsg(e)); } }}>Pin site location</Button><span className="muted small">{pt ? `${pt.lat.toFixed(4)}, ${pt.lng.toFixed(4)}` : 'Required'}</span></div>
+        <AddressSearch label="Site address" value={f.address} near={pt}
+  onChange={(v) => { setF((o) => ({ ...o, address: v })); setPt(null); }}
+  onPick={(p) => { setF((o) => ({ ...o, address: p.address })); setPt({ lat: p.lat, lng: p.lng }); }} />
         <TextField label="Budget in KSh (optional)" inputMode="decimal" value={f.budget} onChange={set('budget')} />
         <div className="field"><label htmlFor="pf">Photos or documents (optional)</label><input id="pf" type="file" multiple accept="image/*,video/*,application/pdf" onChange={(e) => setFiles(Array.from(e.target.files ?? []))} /></div>
         <Button loading={busy} disabled={f.title.length < 3 || f.scope.length < 10 || !f.address || !pt || !catId} onClick={submit}>Send request</Button>

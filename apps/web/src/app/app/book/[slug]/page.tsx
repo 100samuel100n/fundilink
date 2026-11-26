@@ -3,10 +3,11 @@ import React, { Suspense, use, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { kes, newIdempotencyKey, PRICING_LABEL, type BookingKind, type LineInput, type ProProfile } from '@fundilink/sdk';
 import { api } from '@/lib/api';
-import { errMsg, getPosition, useAsync } from '@/lib/hooks';
+import { errMsg, useAsync } from '@/lib/hooks';
 import { useToast } from '@/lib/toast';
 import { Async, Button, Card, Chip, Select, TextArea, TextField } from '@/components/ui';
 import { PayModeChooser } from '@/components/payments';
+import { AddressSearch } from '@/components/AddressSearch';
 
 type Svc = ProProfile['services'][number];
 const QTY_LABEL: Record<string, string> = { hourly: 'Hours', daily: 'Days', per_unit: 'Units', per_sqm: 'Square metres' };
@@ -50,7 +51,7 @@ function Wizard({ p }: { p: ProProfile }) {
   const quotationOnly = !!price && (price.model === 'quotation' || price.model === 'project' || price.amount == null);
   const labels = ['Service', 'Describe', 'When & where', 'Confirm'];
 
-  const gps = async () => { try { const g = await getPosition(); setPt(g); if (!addr) setAddr(`GPS ${g.lat.toFixed(4)}, ${g.lng.toFixed(4)}`); } catch (e) { t.err(errMsg(e)); } };
+  
   const submit = async () => {
     if (!pt || !svc || !price) return;
     setBusy(true);
@@ -98,8 +99,9 @@ function Wizard({ p }: { p: ProProfile }) {
         <Card>
           {kind !== 'emergency' ? <TextField label="Date and time" type="datetime-local" value={when} min={new Date(Date.now() + 36e5).toISOString().slice(0, 16)} onChange={(e) => setWhen(e.target.value)} /> : <p className="muted">Emergency: the professional is asked to come now.</p>}
           {locs.data?.length ? <Select label="Saved location" value="" onChange={(e) => { const l = locs.data!.find((x) => x.id === e.target.value); if (l) { setAddr(l.address); setPt({ lat: l.lat, lng: l.lng }); } }} options={[{ value: '', label: 'Choose a saved location…' }, ...locs.data.map((l) => ({ value: l.id, label: `${l.label}: ${l.address}` }))]} /> : null}
-          <TextField label="Address" placeholder="Estate, street, building, landmark" value={addr} onChange={(e) => setAddr(e.target.value)} />
-          <Button tone="secondary" onClick={gps}>Use my exact GPS location</Button>
+          <AddressSearch value={addr} near={pt}
+           onChange={(v) => { setAddr(v); setPt(null); }}
+           onPick={(p) => { setAddr(p.address); setPt({ lat: p.lat, lng: p.lng }); }} />
           <p className="small muted">{pt ? `Pinned at ${pt.lat.toFixed(5)}, ${pt.lng.toFixed(5)}. Your address is shared with the professional only after they accept.` : 'A GPS pin is needed so the professional can navigate to you and travel fees are exact.'}</p>
         </Card>
       ) : null}
