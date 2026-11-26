@@ -93,10 +93,33 @@ export class ProfessionalController {
   constructor(private s: ProfessionalService, private db: Db, private storage: Storage) {}
 
   @Post('onboard') onboard(@CurrentUser() u: AuthUser, @Body() b: unknown) { return this.s.onboard(u, parse(Onboard, b)); }
-  @Get('me') async me(@CurrentUser() u: AuthUser) {
+    @Get('me') async me(@CurrentUser() u: AuthUser) {
     const p = await this.s.mine(u.id);
-    return { ...p, licenceGaps: await this.s.licenceGaps(p.id) };
+    const [pt] = await this.db.query('SELECT ST_Y(base_location::geometry) AS lat, ST_X(base_location::geometry) AS lng FROM professional_profiles WHERE id=$1', [p.id]);
+    const service_areas = await this.db.query('SELECT county, town, estate FROM professional_service_areas WHERE professional_id=$1', [p.id]);
+    return { ...p, lat: pt?.lat ?? null, lng: pt?.lng ?? null, area: p.base_area, service_areas, licenceGaps: await this.s.licenceGaps(p.id) };
   }
+
+    @Put('location') async setLocation(@CurrentUser() u: AuthUser, @Body() b: unknown) {
+    const i = parse(z.object({
+      lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), county: z.string().min(2), area: z.string().optional(),
+      maxTravelKm: z.number().positive().max(500).optional(), freeRadiusKm: z.number().min(0).max(500).optional(),
+      serviceAreas: z.array(z.object({ county: z.string(), town: z.string().optional(), estate: z.string().optional() })).max(60).optional(),
+    }), b);
+    const p = await this.s.mine(u.id);
+    await this.db.tx(async (c) => {
+      await c.query(
+        `UPDATE professional_profiles SET base_location=ST_SetSRID(ST_MakePoint($2,$3),4326)::geography, base_area=$4, county=$5,
+           max_travel_km=COALESCE($6,max_travel_km), free_radius_km=COALESCE($7,free_radius_km), location_updated_at=now() WHERE id=$1`,
+        [p.id, i.lng, i.lat, i.area ?? null, i.county, i.maxTravelKm ?? null, i.freeRadiusKm ?? null]);
+      if (i.serviceAreas) {
+        await c.query('DELETE FROM professional_service_areas WHERE professional_id=$1', [p.id]);
+        for (const a of i.serviceAreas) await c.query('INSERT INTO professional_service_areas (professional_id, county, town, estate) VALUES ($1,$2,$3,$4)', [p.id, a.county, a.town ?? null, a.estate ?? null]);
+      }
+    });
+    return { ok: true };
+  }
+  
   @Put('services') service(@CurrentUser() u: AuthUser, @Body() b: unknown) { return this.s.upsertService(u, parse(ServiceInput, b)); }
   @Put('payout-account') payout(@CurrentUser() u: AuthUser, @Body() b: unknown) {
     return this.s.setPayoutAccount(u, parse(z.object({ kind: z.enum(['mobile_money', 'bank']), provider: z.string(), accountRef: z.string().min(6), accountName: z.string().min(2) }), b));
