@@ -23,6 +23,7 @@ import { EquipmentController, MonetisationController, NotifyService, PublicConte
 import { EnterpriseExtrasController, InvoiceController, VerificationSelfController } from './modules/extensions2.ts';
 import { DemoController } from './modules/demo.ts';
 import { MaskedCalls, OpenSearchIndex, WhatsApp } from './providers/extras.ts';
+import { TemplateService } from './modules/templates.ts';
 
 @Global()
 @Module({
@@ -37,7 +38,7 @@ import { MaskedCalls, OpenSearchIndex, WhatsApp } from './providers/extras.ts';
     Db, Audit, WalletService, Notifier, Sms, Email, Push, Storage, Payments, Maps, Ai,
     AuthService, DiscoveryService, BookingService, PaymentService, TrackingGateway, ProfessionalService, ProjectService,
     MessagingService, ChatGateway, EnterpriseService, AiService, JobsService,
-    NotifyService, WhatsApp, MaskedCalls, OpenSearchIndex,
+    NotifyService, WhatsApp, MaskedCalls, OpenSearchIndex,TemplateService,
     { provide: APP_GUARD, useClass: AuthGuard },   // everything requires a valid token unless @Public()
     { provide: APP_GUARD, useClass: AccessGuard }, // then role/permission checks run server-side
   ],

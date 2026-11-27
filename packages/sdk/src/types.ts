@@ -97,7 +97,7 @@ export interface PaymentIntent {
   currency?: string; receipt?: string | null; failure_reason?: string | null; phone?: string | null; created_at?: string; expires_at?: string; message?: string;
 }
 export interface PaymentConfig { provider: string; methods: ('mpesa' | 'card' | 'bank')[]; escrowEnabled: boolean; directEnabled: boolean; wallet: { minTopup: number; maxTopup: number } }
-export interface WalletSummary { balance: number | string; minBalance: number; lowAlert: number; minTopup: number; maxTopup: number; low: boolean; canTakeDirect: boolean }
+export interface WalletSummary { balance: number | string; committed?: number; available?: number; minBalance: number; lowAlert: number; minTopup: number; maxTopup: number; low: boolean; canTakeDirect: boolean }
 export interface WalletTxn { id: string; kind: string; booking_id: string | null; created_at: string; amount: string; reference: string | null }
 export interface WalletView extends WalletSummary { transactions: WalletTxn[]; topups: PaymentIntent[] }
 export interface Journey {

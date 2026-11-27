@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Injectable, Param, Post, Put, Query, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller,NotFoundException, ForbiddenException, Get, Injectable, Param, Post, Put, Query, Req } from '@nestjs/common';
 import { z } from 'zod';
 import { AuthUser, CurrentUser, Db, Audit, Perm, parse } from '../common/core.ts';
 import { PaymentService } from './payments.ts';
@@ -101,21 +101,48 @@ export class AdminController {
     return { ok: true, note: 'Applies to new bookings only; existing bookings keep the commission frozen at creation.' };
   }
 
-    @Perm('commission.write') @Put('commission/rule')
+     @Perm('commission.write') @Put('commission/rule')
   async commissionRule(@CurrentUser() u: AuthUser, @Body() b: unknown, @Req() req: any) {
     const i = parse(z.object({
       categoryId: z.number().int().optional(), kind: z.enum(['instant', 'scheduled', 'quotation', 'emergency']).optional(), organizationId: z.string().uuid().optional(),
-      commissionBps: z.number().int().min(0).max(3000), customerFeeBps: z.number().int().min(0).max(2000).default(0), active: z.boolean().default(true), reason: z.string().min(5),
+      commissionBps: z.number().int().min(0).max(3000), customerFeeBps: z.number().int().min(0).max(2000).default(0), reason: z.string().min(5),
     }), b);
-    if (i.categoryId === undefined && i.kind === undefined && i.organizationId === undefined) throw new BadRequestException('Use the default commission setting for a platform-wide rate');
+    if (i.categoryId === undefined && i.kind === undefined && i.organizationId === undefined) throw new BadRequestException('Choose a category, a booking type or a business. The platform-wide rate is changed in Settings.');
+    const scope = [i.categoryId ?? null, i.kind ?? null, i.organizationId ?? null];
+    const prev = await this.db.one(`SELECT * FROM commission_rules WHERE active AND category_id IS NOT DISTINCT FROM $1::int AND kind IS NOT DISTINCT FROM $2::booking_kind AND organization_id IS NOT DISTINCT FROM $3::uuid ORDER BY id DESC LIMIT 1`, scope);
     await this.db.tx(async (c) => {
-      await c.query(`UPDATE commission_rules SET active=false WHERE category_id IS NOT DISTINCT FROM $1::int AND kind IS NOT DISTINCT FROM $2::booking_kind AND organization_id IS NOT DISTINCT FROM $3::uuid`, [i.categoryId ?? null, i.kind ?? null, i.organizationId ?? null]);
-      if (i.active) await c.query(`INSERT INTO commission_rules (category_id, kind, organization_id, commission_bps, customer_fee_bps) VALUES ($1,$2,$3,$4,$5)`, [i.categoryId ?? null, i.kind ?? null, i.organizationId ?? null, i.commissionBps, i.customerFeeBps]);
-      await this.audit.log(u, { action: 'commission.rule', kind: 'commission_rule', id: `${i.categoryId ?? '*'}:${i.kind ?? '*'}:${i.organizationId ?? '*'}`, after: i, reason: i.reason, ip: req.ip }, c);
+      await c.query(`UPDATE commission_rules SET active=false WHERE category_id IS NOT DISTINCT FROM $1::int AND kind IS NOT DISTINCT FROM $2::booking_kind AND organization_id IS NOT DISTINCT FROM $3::uuid`, scope);
+      await c.query(`INSERT INTO commission_rules (category_id, kind, organization_id, commission_bps, customer_fee_bps) VALUES ($1,$2,$3,$4,$5)`, [...scope, i.commissionBps, i.customerFeeBps]);
+      await this.audit.log(u, { action: 'commission.rule', kind: 'commission_rule', id: scope.map((x) => x ?? '*').join(':'), before: prev ?? null, after: i, reason: i.reason, ip: req.ip }, c);
     });
     return { ok: true, note: 'Applies to new bookings only; existing bookings keep the commission frozen at creation.' };
   }
 
+    @Perm('commission.write') @Get('commission/rules')
+  async commissionRules() {
+    const rules = await this.db.query(
+      `SELECT r.id, r.category_id, c.name AS category, r.kind, r.organization_id, o.name AS organization, r.commission_bps, r.customer_fee_bps, r.priority, r.active
+         FROM commission_rules r LEFT JOIN categories c ON c.id=r.category_id LEFT JOIN organizations o ON o.id=r.organization_id
+        ORDER BY r.active DESC, (r.category_id IS NULL AND r.kind IS NULL AND r.organization_id IS NULL) DESC, r.id DESC`);
+    const categories = await this.db.query('SELECT id, name FROM categories ORDER BY sort_order, name');
+    const organizations = await this.db.query('SELECT id, name FROM organizations ORDER BY name LIMIT 500');
+    return { rules, categories, organizations };
+  }
+
+  @Perm('commission.write') @Put('commission/rules/:id/off')
+  async commissionRuleOff(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() b: unknown, @Req() req: any) {
+    const i = parse(z.object({ reason: z.string().min(5) }), b);
+    const r = await this.db.one<any>('SELECT * FROM commission_rules WHERE id=$1 AND active', [Number(id)]);
+    if (!r) throw new NotFoundException('That rule is not active');
+    if (r.category_id == null && r.kind == null && r.organization_id == null) throw new BadRequestException('The platform default cannot be turned off. Change its rate in Settings instead.');
+    await this.db.tx(async (c) => {
+      await c.query('UPDATE commission_rules SET active=false WHERE id=$1', [r.id]);
+      await this.audit.log(u, { action: 'commission.rule_off', kind: 'commission_rule', id: String(r.id), before: r, after: { active: false }, reason: i.reason, ip: req.ip }, c);
+    });
+    return { ok: true };
+  }
+
+  
   @Perm('activation_fees.write') @Put('activation-fee')
   async activation(@CurrentUser() u: AuthUser, @Body() b: unknown) {
     const i = parse(z.object({ amount: z.number().int().min(0), enabled: z.boolean(), founding_waiver: z.boolean().default(true), reason: z.string().min(5) }), b);

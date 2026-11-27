@@ -236,6 +236,9 @@ export class FundiLink {
     disputes: () => this.get<any[]>('/admin/disputes'),
     resolveDispute: (id: string, i: { outcome: 'resolved_customer' | 'resolved_professional' | 'resolved_split'; resolution: string; refundAmount?: number }) => this.post(`/admin/disputes/${id}/resolve`, i),
     setCommission: (i: { commissionBps: number; customerFeeBps?: number; reason: string }) => this.put('/admin/commission', i),
+    commissionRules: () => this.get<{ rules: any[]; categories: { id: number; name: string }[]; organizations: { id: string; name: string }[] }>('/admin/commission/rules'),
+    saveCommissionRule: (i: { categoryId?: number; kind?: string; organizationId?: string; commissionBps: number; customerFeeBps?: number; reason: string }) => this.put('/admin/commission/rule', i),
+    turnOffCommissionRule: (id: number | string, reason: string) => this.put(`/admin/commission/rules/${id}/off`, { reason }),
     setActivationFee: (i: { amount: number; enabled: boolean; founding_waiver?: boolean; reason: string }) => this.put('/admin/activation-fee', i),
     auditLogs: (limit = 200) => this.get<any[]>(`/admin/audit-logs${qs({ limit })}`),
     fraudFlags: () => this.get<any[]>('/admin/fraud-flags'),
@@ -336,6 +339,9 @@ export class FundiLink {
     analytics: () => this.get<any>('/admin/analytics'),
     settings: () => this.get<any[]>('/admin/settings'),
     setSetting: (key: string, value: unknown, reason: string) => this.put(`/admin/settings/${key}`, { value, reason }),
+        templates: () => this.get<{ templates: any[]; overrides: Record<string, { title?: string; body?: string; sms?: string }>; sample: Record<string, string> }>('/admin/templates'),
+    saveTemplate: (key: string, i: { title: string; body: string; sms?: string; reason: string }) => this.put(`/admin/templates/${key}`, i),
+    resetTemplate: (key: string, reason: string) => this.put(`/admin/templates/${key}/reset`, { reason }),
     exportCsv: async (kind: 'bookings' | 'transactions' | 'customers') => {
       const t = await this.accessToken();
       const r = await fetch(`${this.o.baseUrl}/admin/export/${kind}`, { headers: { authorization: `Bearer ${t}` } });

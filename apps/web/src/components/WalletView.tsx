@@ -7,7 +7,7 @@ import { useToast } from '@/lib/toast';
 import { Async, Badge, Card, Skeleton } from './ui';
 import { MpesaSheet } from './payments';
 
-const KIND: Record<string, string> = { wallet_topup: 'Top-up', direct_commission: 'Commission', wallet_adjustment: 'Adjustment' };
+const KIND: Record<string, string> = { wallet_topup: 'Top-up', direct_commission: 'Commission', wallet_adjustment: 'Adjustment', wallet_netting: 'Debt cleared from in-app payout' };
 const QUICK = [20000, 50000, 100000, 200000, 500000];
 
 /** Prepaid wallet for pay-on-site jobs (Model 2): top up with M-Pesa, commission is deducted when the customer confirms a job. */
@@ -22,15 +22,22 @@ export function WalletView() {
 
   return (
     <Async state={w} skeleton={<Skeleton h={160} n={2} />}>{(d) => {
-      const bal = Number(d.balance);
-      const tone = bal <= d.minBalance ? 'bad' : d.low ? 'warn' : 'good';
+            const bal = Number(d.balance);
+      const avail = Number(d.available ?? d.balance);
+      const owed = Math.max(0, -bal);
+      const tone = avail <= d.minBalance ? 'bad' : d.low ? 'warn' : 'good';
       const valid = minor >= d.minTopup && minor <= d.maxTopup && minor % 100 === 0;
       return (
         <div className="stack" style={{ gap: 20 }}>
           <div className={`walletcard ${tone}`}>
             <div className="wc-top"><span className="wc-label">Wallet balance</span><Badge tone={tone === 'good' ? 'success' : tone === 'warn' ? 'warning' : 'danger'}>{tone === 'good' ? 'Taking pay-on-site jobs' : tone === 'warn' ? 'Running low' : 'Top up to continue'}</Badge></div>
             <div className="wc-amount">{kes(bal)}</div>
-            <p className="wc-note">{bal <= d.minBalance ? 'Customers cannot choose pay-on-site with you until you top up. In-app paid jobs are unaffected.' : 'Platform commission on pay-on-site jobs is taken from this balance when the customer confirms the job. In-app paid jobs are paid out to you directly and never touch it.'}</p>
+                        <p className="wc-note">{owed > 0
+              ? `You owe ${kes(owed)} in commission. It is taken automatically from your next in-app payout, or top up to clear it now. Pay-on-site stays paused until your balance is positive.`
+              : avail <= d.minBalance
+                ? 'Customers cannot choose pay-on-site with you until you top up. In-app paid jobs are unaffected.'
+                : 'Platform commission on pay-on-site jobs is taken from this balance when the customer confirms the job. In-app paid jobs are paid out to you directly and never touch it.'}</p>
+            {Number(d.committed) > 0 ? <p className="wc-note">{kes(Number(d.committed))} is reserved for commission on pay-on-site jobs you have accepted. Available: {kes(avail)}.</p> : null}
             <button className="btn wc-btn" onClick={() => setOpen((o) => !o)}>{open ? 'Close' : 'Top up with M-Pesa'}</button>
           </div>
 

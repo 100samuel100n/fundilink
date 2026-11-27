@@ -1,4 +1,5 @@
 'use client';
+import Link from 'next/link';
 import React, { useState } from 'react';
 import { api } from '@/lib/api';
 import { errMsg } from '@/lib/hooks';
@@ -18,7 +19,7 @@ export default function Settings() {
           <TextField label="Customer service fee (%) optional" inputMode="decimal" value={c.fee} onChange={(e) => setC({ ...c, fee: e.target.value })} />
           <TextArea label="Reason for change" value={c.reason} onChange={(e) => setC({ ...c, reason: e.target.value })} />
           <Button disabled={!Number(c.pct) || c.reason.trim().length < 5} onClick={() => guard(() => api.admin.setCommission({ commissionBps: Math.round(Number(c.pct) * 100), customerFeeBps: c.fee ? Math.round(Number(c.fee) * 100) : undefined, reason: c.reason }), 'Commission updated')}>Update commission</Button>
-          <p className="small muted">Applies to new bookings only. Existing bookings keep the rate they were created with.</p></Card>
+                    <p className="small muted">Applies to new bookings only. Existing bookings keep the rate they were created with. Need a different rate for a category, booking type or business? <Link href="/admin/commission">Commission rules</Link>.</p></Card>
         <Card><h3>Professional activation fee</h3>
           <TextField label="One-off fee (KSh)" inputMode="decimal" value={a.amount} onChange={(e) => setA({ ...a, amount: e.target.value })} />
           <Check label="Fee enabled" checked={a.enabled} onChange={(e) => setA({ ...a, enabled: e.target.checked })} />

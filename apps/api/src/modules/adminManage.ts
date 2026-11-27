@@ -1,6 +1,7 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Header, NotFoundException, Param, Post, Put, Query, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Header, Logger, NotFoundException, Param, Post, Put, Query, Req } from '@nestjs/common';
 import { z } from 'zod';
 import { AuthUser, CurrentUser, Db, Audit, Perm, parse } from '../common/core.ts';
+import { SAMPLE_VARS, TEMPLATES, TemplateService, unknownVars } from './templates.ts';
 
 const lim = (n: unknown) => Math.min(Math.max(Number(n) || 100, 1), 500);
 const csv = (rows: Record<string, unknown>[]) => {
@@ -213,18 +214,24 @@ export class AdminManageController {
   equipment() { return this.db.query(`SELECT e.*, p.display_name owner FROM equipment_listings e JOIN professional_profiles p ON p.id=e.professional_id ORDER BY e.created_at DESC LIMIT 200`); }
 
   /* ---- Rich analytics for the overview charts ---- */
-  @Perm('analytics.read') @Get('analytics')
+    @Perm('analytics.read') @Get('analytics')
   async analytics() {
-    const revenue = await this.db.query(`SELECT date_trunc('month', b.created_at)::date month, COALESCE(sum(b.commission+b.customer_fee) FILTER (WHERE b.status IN ('completed','settlement_pending','settled')),0)::bigint revenue, count(*)::int bookings FROM bookings b WHERE b.created_at > now()-interval '12 months' GROUP BY 1 ORDER BY 1`);
-    const signups = await this.db.query(`SELECT date_trunc('month', u.created_at)::date month, count(*) FILTER (WHERE r.code='customer')::int customers, count(*) FILTER (WHERE r.code='professional')::int professionals FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id WHERE u.created_at > now()-interval '12 months' GROUP BY 1 ORDER BY 1`);
-    const profitable = await this.db.query(`SELECT c.name category, COALESCE(sum(b.commission+b.customer_fee),0)::bigint revenue, count(*)::int bookings FROM bookings b JOIN professional_services ps ON ps.id=b.professional_service_id JOIN services s ON s.id=ps.service_id JOIN categories c ON c.id=s.category_id WHERE b.status IN ('completed','settlement_pending','settled') GROUP BY 1 ORDER BY 2 DESC LIMIT 10`);
-    const cancel = await this.db.query(`SELECT date_trunc('week', created_at)::date week, round(100.0*count(*) FILTER (WHERE status='cancelled')/NULLIF(count(*),0),1) cancel_pct FROM bookings WHERE created_at > now()-interval '12 weeks' GROUP BY 1 ORDER BY 1`);
-    const [conv] = await this.db.query(`SELECT (SELECT count(*) FROM search_events WHERE created_at > now()-interval '30 days')::int searches, (SELECT count(*) FROM bookings WHERE status IN ('completed','settlement_pending','settled') AND created_at > now()-interval '30 days')::int completed`);
-    const [ret] = await this.db.query(`WITH c AS (SELECT customer_id, count(*) n FROM bookings WHERE status IN ('completed','settlement_pending','settled') GROUP BY 1) SELECT round(100.0*count(*) FILTER (WHERE n>1)/NULLIF(count(*),0),1) customer_repeat_pct FROM c`);
-    const [pret] = await this.db.query(`SELECT round(100.0*count(DISTINCT professional_id) FILTER (WHERE created_at > now()-interval '30 days')/NULLIF(count(DISTINCT professional_id),0),1) professional_active_30d_pct FROM bookings`);
-    const [resp] = await this.db.query(`SELECT round(100.0*count(*) FILTER (WHERE status NOT IN ('declined','cancelled') OR status IS NULL)/NULLIF(count(*),0),1) request_acceptance_pct FROM bookings WHERE status NOT IN ('draft','pending_payment')`);
-    const liquidity = await this.db.query(`SELECT county, count(*)::int active_professionals FROM professional_profiles WHERE status='active' GROUP BY 1 ORDER BY 2 DESC LIMIT 20`);
-    return { revenue, signups, profitable, cancel, funnel: { ...conv, searchToBookingPct: conv.searches ? Number(((conv.completed / conv.searches) * 100).toFixed(1)) : 0 }, retention: { ...ret, ...pret }, requestAcceptance: resp, liquidity };
+    // Each chart is isolated: one failing query leaves that chart empty instead of failing the whole page, and the log names it.
+    const run = (label: string, sql: string) => this.db.query<any>(sql).catch((e: any) => { new Logger('Analytics').error(`"${label}" query failed: ${e?.message ?? e}`); return [] as any[]; });
+    const done = `('completed','settlement_pending','settled')`;
+    const [revenue, signups, profitable, cancel, conv, ret, pret, resp, liquidity] = await Promise.all([
+      run('revenue', `SELECT date_trunc('month', b.created_at)::date AS month, COALESCE(sum(b.commission + b.customer_fee) FILTER (WHERE b.status IN ${done}), 0)::bigint AS revenue, count(*)::int AS bookings FROM bookings b WHERE b.created_at > now() - interval '12 months' GROUP BY 1 ORDER BY 1`),
+      run('signups', `SELECT date_trunc('month', u.created_at)::date AS month, count(*) FILTER (WHERE r.code='customer')::int AS customers, count(*) FILTER (WHERE r.code='professional')::int AS professionals FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id WHERE u.created_at > now() - interval '12 months' GROUP BY 1 ORDER BY 1`),
+      run('profitable', `SELECT c.name AS category, COALESCE(sum(b.commission + b.customer_fee), 0)::bigint AS revenue, count(*)::int AS bookings FROM bookings b JOIN professional_services ps ON ps.id=b.professional_service_id JOIN services s ON s.id=ps.service_id JOIN categories c ON c.id=s.category_id WHERE b.status IN ${done} GROUP BY 1 ORDER BY 2 DESC LIMIT 10`),
+      run('cancel', `SELECT date_trunc('week', created_at)::date AS week, round(100.0 * count(*) FILTER (WHERE status='cancelled') / NULLIF(count(*), 0), 1) AS cancel_pct FROM bookings WHERE created_at > now() - interval '12 weeks' GROUP BY 1 ORDER BY 1`),
+      run('funnel', `SELECT (SELECT count(*) FROM search_events WHERE created_at > now() - interval '30 days')::int AS searches, (SELECT count(*) FROM bookings WHERE status IN ${done} AND created_at > now() - interval '30 days')::int AS completed`),
+      run('repeat', `WITH c AS (SELECT customer_id, count(*) AS n FROM bookings WHERE status IN ${done} GROUP BY 1) SELECT round(100.0 * count(*) FILTER (WHERE n > 1) / NULLIF(count(*), 0), 1) AS customer_repeat_pct FROM c`),
+      run('pro-active', `SELECT round(100.0 * count(DISTINCT professional_id) FILTER (WHERE created_at > now() - interval '30 days') / NULLIF(count(DISTINCT professional_id), 0), 1) AS professional_active_30d_pct FROM bookings`),
+      run('acceptance', `SELECT round(100.0 * count(*) FILTER (WHERE status NOT IN ('declined','cancelled')) / NULLIF(count(*), 0), 1) AS request_acceptance_pct FROM bookings WHERE status NOT IN ('draft','pending_payment')`),
+      run('liquidity', `SELECT county, count(*)::int AS active_professionals FROM professional_profiles WHERE status='active' GROUP BY 1 ORDER BY 2 DESC LIMIT 20`),
+    ]);
+    const f = conv[0] ?? { searches: 0, completed: 0 };
+    return { revenue, signups, profitable, cancel, funnel: { ...f, searchToBookingPct: f.searches ? Number(((f.completed / f.searches) * 100).toFixed(1)) : 0 }, retention: { ...(ret[0] ?? {}), ...(pret[0] ?? {}) }, requestAcceptance: resp[0] ?? {}, liquidity };
   }
 
   /* ---- Settings, notification templates, exports (exports are audited) ---- */
@@ -250,6 +257,39 @@ export class AdminManageController {
     const rows = await this.db.query(q[kind]);
     await this.audit.log(u, { action: 'data.export', kind: 'export', id: kind, after: { rows: rows.length }, ip: req.ip, device: req.headers['user-agent'] });
     return csv(rows);
+  }
+
+    @Perm('settings.write') @Get('templates')
+  async templates() {
+    const rows = await this.db.query<any>(`SELECT key, value FROM platform_settings WHERE key LIKE 'template.%'`);
+    const overrides: Record<string, { title?: string; body?: string; sms?: string }> = {};
+    for (const r of rows) overrides[String(r.key).slice('template.'.length)] = typeof r.value === 'string' ? { body: r.value } : r.value;
+    return { templates: TEMPLATES, overrides, sample: SAMPLE_VARS };
+  }
+
+  @Perm('settings.write') @Put('templates/:key')
+  async setTemplate(@CurrentUser() u: AuthUser, @Param('key') key: string, @Body() b: unknown, @Req() req: any) {
+    const def = TEMPLATES.find((t) => t.key === key);
+    if (!def) throw new NotFoundException('Unknown template');
+    const i = parse(z.object({ title: z.string().min(2).max(120), body: z.string().min(2).max(600), sms: z.string().max(300).optional(), reason: z.string().min(5) }), b);
+    const bad = [...new Set([...unknownVars(i.title, def.vars), ...unknownVars(i.body, def.vars), ...unknownVars(i.sms ?? '', def.vars)])];
+    if (bad.length) throw new BadRequestException(`Unknown placeholder ${bad.map((x) => `{{${x}}}`).join(', ')}. Available here: ${def.vars.length ? def.vars.map((x) => `{{${x}}}`).join(', ') : 'none'}.`);
+    const prev = await this.db.one('SELECT value FROM platform_settings WHERE key=$1', [`template.${key}`]);
+    await this.db.query(`INSERT INTO platform_settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, [`template.${key}`, JSON.stringify({ title: i.title, body: i.body, sms: i.sms })]);
+    await this.audit.log(u, { action: 'template.change', kind: 'notification_template', id: key, before: prev, after: { title: i.title, body: i.body, sms: i.sms }, reason: i.reason, ip: req.ip });
+    TemplateService.instance?.clear(key);
+    return { ok: true };
+  }
+
+  @Perm('settings.write') @Put('templates/:key/reset')
+  async resetTemplate(@CurrentUser() u: AuthUser, @Param('key') key: string, @Body() b: unknown, @Req() req: any) {
+    if (!TEMPLATES.some((t) => t.key === key)) throw new NotFoundException('Unknown template');
+    const i = parse(z.object({ reason: z.string().min(5) }), b);
+    const prev = await this.db.one('SELECT value FROM platform_settings WHERE key=$1', [`template.${key}`]);
+    await this.db.query('DELETE FROM platform_settings WHERE key=$1', [`template.${key}`]);
+    await this.audit.log(u, { action: 'template.reset', kind: 'notification_template', id: key, before: prev, after: null, reason: i.reason, ip: req.ip });
+    TemplateService.instance?.clear(key);
+    return { ok: true };
   }
 }
 

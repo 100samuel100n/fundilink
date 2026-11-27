@@ -5,6 +5,7 @@ import { AuthUser, CurrentUser, Db, Audit, Perm, Public, parse, postLedger, sha2
 import { Email, Payments, Push, Sms } from '../providers/providers.ts';
 import { MaskedCalls, WhatsApp } from '../providers/extras.ts';
 import { BookingService } from './bookings.ts';
+import { TEMPLATES, emailHtml, tplBuild } from './templates.ts';
 
 const PSP = 'PSP_HOLDING';
 const ref = (p: string) => `${p}-${String(randomInt(0, 1e8)).padStart(8, '0')}`;
@@ -21,11 +22,11 @@ export class NotifyService {
     const rows = await this.db.query<any>(`SELECT n.*, u.phone, u.email, u.whatsapp_opt_in FROM notifications n JOIN users u ON u.id=n.user_id WHERE n.delivered_at IS NULL ORDER BY n.created_at LIMIT $1`, [limit]);
     for (const n of rows) {
       const off = new Set((await this.db.query<any>(`SELECT channel FROM notification_preferences WHERE user_id=$1 AND template=$2 AND NOT enabled`, [n.user_id, n.template])).map((r) => r.channel));
-      const essential = ['arrival_pin', 'payout_changed', 'request_expired', 'revision_request', 'addon_paid', 'payment_received', 'payout_sent', 'payout_failed', 'payment_refunded', 'wallet_empty', 'direct_payment_recorded'].includes(n.template); // safety/money alerts can't be muted
+            const essential = !!TEMPLATES.find((t) => t.key === n.template)?.essential; // safety/money alerts can't be muted
       const want = (ch: string) => (n.channels as string[]).includes(ch) && (essential || !off.has(ch));
       try {
-        if (want('sms') && n.phone) await this.sms.send(n.phone, `${n.title}: ${n.body}`.slice(0, 300));
-        if (want('email') && n.email) await this.email.send(n.email, n.title ?? 'FundiLink', `<p>${String(n.body ?? '').replace(/</g, '&lt;')}</p>`);
+                if (want('sms') && n.phone) await this.sms.send(n.phone, String((n.data as any)?._sms ?? `${n.title}: ${n.body}`).slice(0, 300));
+        if (want('email') && n.email) await this.email.send(n.email, n.title ?? 'FundiLink', emailHtml(n.title ?? 'FundiLink', n.body ?? ''));
         if (want('push')) {
           const t = (await this.db.query<any>('SELECT token FROM push_tokens WHERE user_id=$1', [n.user_id])).map((r) => r.token);
           if (t.length) await this.push.send(t, n.title ?? 'FundiLink', n.body ?? '', { template: n.template, ...(n.data ?? {}) });

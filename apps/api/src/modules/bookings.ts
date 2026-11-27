@@ -3,7 +3,7 @@ import { PoolClient } from 'pg';
 import { randomInt } from 'node:crypto';
 import { z } from 'zod';
 import {
-  Actor, BookingStatus, pct, buildInvoice, DEFAULT_FEES, haversineKm, transition, travelFee, LineItem, addonSplit, validateAddon,
+  Actor, BookingStatus, pct, buildInvoice, DEFAULT_FEES, haversineKm, transition, travelFee, LineItem, addonSplit, validateAddon,tplBuild,
 } from '@fundilink/domain';
 import { AuthUser, CurrentUser, Db, parse, sha256, Audit } from '../common/core.ts';
 import { WalletService } from './wallet.ts';

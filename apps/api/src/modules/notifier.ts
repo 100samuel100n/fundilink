@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Db } from '../common/core.ts';
 import { Push } from '../providers/providers.ts';
+import { TemplateService } from './templates.ts';
 
 export interface Note { template: string; title: string; body: string; data?: Record<string, unknown>; channels?: string[] }
 
@@ -12,13 +13,20 @@ export interface Note { template: string; title: string; body: string; data?: Re
 @Injectable()
 export class Notifier {
   private log = new Logger('Notifier');
-  constructor(private db: Db, private push: Push) {}
+    constructor(private db: Db, private push: Push, private templates: TemplateService) {}
 
   /** The people behind a professional profile: the owner plus business admins/members. */
   async proUsers(professionalId: string): Promise<string[]> {
     const rows = await this.db.query<{ id: string }>(
       `SELECT user_id AS id FROM professional_profiles WHERE id=$1 UNION SELECT user_id FROM business_members WHERE business_id=$1`, [professionalId]);
     return rows.map((r) => r.id);
+  }
+
+    /** Send a catalogue template. Wording comes from the catalogue, or from the admin's edited version. */
+  async tpl(userIds: string | string[], key: string, vars: Record<string, unknown>, o: { data?: Record<string, unknown>; channels?: string[] } = {}): Promise<void> {
+    const b = await this.templates.build(key, vars);
+    if (!b) { this.log.warn(`unknown template ${key}`); return; }
+    await this.send(userIds, { template: key, title: b.title, body: b.body, data: { ...(o.data ?? {}), ...(b.sms ? { _sms: b.sms } : {}) }, channels: o.channels ?? b.def.channels });
   }
 
   async send(userIds: string | string[], n: Note): Promise<void> {
