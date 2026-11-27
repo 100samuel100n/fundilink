@@ -3,7 +3,7 @@ import { PoolClient } from 'pg';
 import { randomInt } from 'node:crypto';
 import { z } from 'zod';
 import {
-  Actor, BookingStatus, pct, buildInvoice, DEFAULT_FEES, haversineKm, transition, travelFee, LineItem, addonSplit, validateAddon,tplBuild,
+  Actor, BookingStatus, buildInvoice, DEFAULT_FEES, haversineKm, pct, transition, travelFee, LineItem, addonSplit, validateAddon,
 } from '@fundilink/domain';
 import { AuthUser, CurrentUser, Db, parse, sha256, Audit } from '../common/core.ts';
 import { WalletService } from './wallet.ts';
@@ -54,19 +54,7 @@ export class BookingService {
 
   private async flag(key: string) { const r = await this.db.one<any>('SELECT value FROM platform_settings WHERE key=$1', [key]); return r ? r.value === true || r.value === 'true' : true; }
 
-  /** Validates a coupon and returns the discount, capped so the professional is never short-paid. */
-  async coupon(userId: string, code: string, subtotal: number, cap: number) {
-    const c = await this.db.one<any>(`SELECT * FROM promotional_campaigns WHERE upper(code)=upper($1) AND active AND (starts_at IS NULL OR starts_at<=now()) AND (ends_at IS NULL OR ends_at>=now())`, [code]);
-    if (!c) throw new BadRequestException('That promo code is not valid');
-    const used = Number((await this.db.one<any>('SELECT count(*) n FROM coupon_redemptions WHERE campaign_id=$1', [c.id]))!.n);
-    const mine = Number((await this.db.one<any>('SELECT count(*) n FROM coupon_redemptions WHERE campaign_id=$1 AND user_id=$2', [c.id, userId]))!.n);
-    if (c.max_redemptions != null && used >= c.max_redemptions) throw new BadRequestException('This promo has been fully redeemed');
-    if (mine >= c.per_user_limit) throw new BadRequestException('You have already used this promo');
-    const raw = c.kind === 'percent' ? Math.round((subtotal * Number(c.value)) / 10_000) : Number(c.value);
-    return { id: c.id as string, code: c.code as string, discount: Math.max(0, Math.min(raw, cap)) };
-  }
-
-    /** Most specific active rule wins: business account > category > booking type > platform default. */
+  /** Most specific active rule wins: business account > category > booking type > platform default. */
   async rule(kind: string, professionalServiceId?: string | null, organizationId?: string | null) {
     return this.db.one<any>(
       `SELECT r.commission_bps, r.customer_fee_bps FROM commission_rules r
@@ -88,6 +76,18 @@ export class BookingService {
     const escrowOk = (await this.flag('payments.escrow_enabled')) && (pro.accepts_escrow_payment !== false || !directOk);
     const modes = [escrowOk ? 'escrow' : null, directOk ? 'direct' : null].filter(Boolean) as ('escrow' | 'direct')[];
     return { modes: modes.length ? modes : (['escrow'] as ('escrow' | 'direct')[]) };
+  }
+
+  /** Validates a coupon and returns the discount, capped so the professional is never short-paid. */
+  async coupon(userId: string, code: string, subtotal: number, cap: number) {
+    const c = await this.db.one<any>(`SELECT * FROM promotional_campaigns WHERE upper(code)=upper($1) AND active AND (starts_at IS NULL OR starts_at<=now()) AND (ends_at IS NULL OR ends_at>=now())`, [code]);
+    if (!c) throw new BadRequestException('That promo code is not valid');
+    const used = Number((await this.db.one<any>('SELECT count(*) n FROM coupon_redemptions WHERE campaign_id=$1', [c.id]))!.n);
+    const mine = Number((await this.db.one<any>('SELECT count(*) n FROM coupon_redemptions WHERE campaign_id=$1 AND user_id=$2', [c.id, userId]))!.n);
+    if (c.max_redemptions != null && used >= c.max_redemptions) throw new BadRequestException('This promo has been fully redeemed');
+    if (mine >= c.per_user_limit) throw new BadRequestException('You have already used this promo');
+    const raw = c.kind === 'percent' ? Math.round((subtotal * Number(c.value)) / 10_000) : Number(c.value);
+    return { id: c.id as string, code: c.code as string, discount: Math.max(0, Math.min(raw, cap)) };
   }
 
   /** Which side of the booking is this user on? Business members count as the professional side. */
@@ -124,14 +124,14 @@ export class BookingService {
       if (!(await this.flag('payments.escrow_enabled'))) throw new BadRequestException('In-app payment is not available right now.');
     }
 
-        const rule = await this.rule(i.kind, i.professionalServiceId, i.organizationId);
+    const rule = await this.rule(i.kind, i.professionalServiceId, i.organizationId);
     const fees = { ...DEFAULT_FEES, commissionBps: rule?.commission_bps ?? DEFAULT_FEES.commissionBps, customerFeeBps: mode === 'direct' ? 0 : rule?.customer_fee_bps ?? 0 }; // on-site jobs: the customer only ever pays the professional
     const inv = buildInvoice(lines, fees);
     if (mode === 'escrow' && pro.accepts_escrow_payment === false) {
-  // Direct-only professionals are booked in-app only when pay-on-site can't work for this job (empty wallet, switched off).
-  const directPossible = (await this.flag('payments.direct_enabled')) && pro.accepts_direct_payment !== false && (await this.wallet.gate(pro.id, inv.commission + inv.customerFee)).ok;
-  if (directPossible) throw new BadRequestException('This professional is paid on site. Choose pay-on-site.');
-}
+      // Direct-only professionals are booked in-app only when pay-on-site can't work for this job (empty wallet, switched off).
+      const directPossible = (await this.flag('payments.direct_enabled')) && pro.accepts_direct_payment !== false && (await this.wallet.gate(pro.id, inv.commission + inv.customerFee)).ok;
+      if (directPossible) throw new BadRequestException('This professional is paid on site. Choose pay-on-site.');
+    }
     // Promotions are funded from the platform's margin only (commission + customer fee): a coupon can never reduce the professional's pay.
     const promo = i.couponCode ? await this.coupon(u.id, i.couponCode, inv.serviceSubtotal, inv.platformRevenue) : null;
     const discount = promo?.discount ?? 0;
@@ -171,7 +171,7 @@ export class BookingService {
     });
     if (mode === 'direct') {
       const nb = out.booking;
-      void this.notifier.proUsers(pro.id).then((ids) => this.notifier.send(ids, { template: 'booking_request', title: i.kind === 'emergency' ? 'Emergency request' : 'New booking request', body: `${i.description.slice(0, 80)} · pay on site · ${kes(inv.professionalNet)} after commission`, data: { bookingId: nb.id }, channels: i.kind === 'emergency' ? ['in_app', 'push', 'sms'] : ['in_app', 'push'] }));
+      void this.notifier.proUsers(pro.id).then((ids) => this.notifier.tpl(ids, 'booking_request_direct', { label: i.kind === 'emergency' ? 'Emergency request' : 'New booking request', description: i.description.slice(0, 80), net: kes(inv.professionalNet) }, { data: { bookingId: nb.id }, channels: i.kind === 'emergency' ? ['in_app', 'push', 'sms'] : ['in_app', 'push'] }));
     }
     return out;
   }
@@ -235,7 +235,7 @@ export class BookingService {
     const note = NOTE[to];
     if (note) {
       const targets = side === 'customer' ? await this.notifier.proUsers(proId) : [custId];
-      void this.notifier.send(targets, { template: `booking_${to}`, title: `${note[0]} · ${ref}`, body: body.reason && ['declined', 'cancelled', 'disputed'].includes(to) ? `${note[1]} Reason: ${body.reason}` : note[1], data: { bookingId } });
+      void this.notifier.tpl(targets, `booking_${to}`, { reference: ref, reasonLine: body.reason && ['declined', 'cancelled', 'disputed'].includes(to) ? ` Reason: ${body.reason}` : '' }, { data: { bookingId } });
     }
     if (to === 'completed') this.onCompleted?.(bookingId);
     if (to === 'declined' || (to === 'cancelled' && (side === 'professional' || ['awaiting_acceptance', 'confirmed', 'scheduled'].includes(prev)))) this.onRefundDue?.(bookingId, body.reason ?? 'Booking cancelled');
@@ -245,8 +245,7 @@ export class BookingService {
   }
 
   private async pinToCustomer(customerId: string, pin: string, ref: string) {
-    await this.db.query(`INSERT INTO notifications (user_id, template, title, body, data, channels) VALUES ($1,'arrival_pin',$2,$3,$4,'{in_app,push}')`,
-      [customerId, 'Your professional has arrived', `Share PIN ${pin} to start the job (${ref})`, JSON.stringify({ pin, ref })]);
+    await this.notifier.tpl(customerId, 'arrival_pin', { pin, reference: ref }, { data: { pin, ref } });
   }
 
   /* =====================================================================================================
@@ -274,7 +273,7 @@ export class BookingService {
       return row;
     });
     const pro = await this.db.one<any>('SELECT display_name FROM professional_profiles WHERE id=$1', [b.professional_id]);
-    await this.notifier.send(b.customer_id, { template: 'revision_request', title: 'Extra work needs your approval', body: `${pro?.display_name ?? 'Your professional'} found: ${i.discovered.slice(0, 90)}. Extra cost ${kes(total)}. Nothing is charged until you approve.`, data: { bookingId, revisionId: r.id } });
+    await this.notifier.tpl(b.customer_id, 'revision_request', { professional: pro?.display_name ?? 'Your professional', finding: i.discovered.slice(0, 90), amount: kes(total) }, { data: { bookingId, revisionId: r.id } });
     return { id: r.id, expires_at: r.expires_at, extra_total: split.gross };
   }
 
@@ -295,10 +294,7 @@ export class BookingService {
     });
     if (out.expired) throw new BadRequestException('This request expired. Ask your professional to send it again.');
     const { _pro, _ref, _bid, ...res } = out;
-    void this.notifier.proUsers(_pro).then((ids) => this.notifier.send(ids, {
-      template: approve ? 'addon_approved' : 'addon_declined', title: approve ? 'Extra work approved' : 'Extra work declined',
-      body: approve ? (res.paymentRequired ? `Approved for ${_ref}. Waiting for the customer to pay ${kes(res.amount)}; we will tell you the moment it lands.` : `Approved for ${_ref}: ${kes(res.amount)} added to the on-site total. Collect it from the customer.`) : `The customer declined the extra work on ${_ref}. Continue with the original scope.`,
-      data: { bookingId: _bid, revisionId: revisionId } }));
+    void this.notifier.proUsers(_pro).then((ids) => this.notifier.tpl(ids, approve ? (res.paymentRequired ? 'addon_approved' : 'addon_approved_direct') : 'addon_declined', { reference: _ref, amount: kes(res.amount) }, { data: { bookingId: _bid, revisionId } }));
     return res;
   }
 
@@ -316,7 +312,7 @@ export class BookingService {
       await c.query(`UPDATE quotation_revisions SET status='withdrawn', payment_status='none' WHERE id=$1`, [revisionId]);
       return r.customer_id as string;
     });
-    await this.notifier.send(customerId, { template: 'addon_withdrawn', title: 'Extra work withdrawn', body: 'Your professional withdrew the extra-work request. Nothing is charged.', data: { revisionId } });
+    await this.notifier.tpl(customerId, 'addon_withdrawn', {}, { data: { revisionId } });
     return { withdrawn: true };
   }
 
@@ -334,8 +330,8 @@ export class BookingService {
   async expireRevisions() {
     const rows = await this.db.query<any>(`UPDATE quotation_revisions r SET status='expired' FROM bookings b WHERE b.id=r.booking_id AND r.status='pending' AND r.expires_at < now() RETURNING r.id, b.customer_id, b.professional_id, b.id AS booking_id`);
     for (const r of rows) {
-      await this.notifier.send(r.customer_id, { template: 'addon_expired', title: 'Extra-work request expired', body: 'The request was not answered in time. Nothing was charged.', data: { bookingId: r.booking_id } });
-      await this.notifier.send(await this.notifier.proUsers(r.professional_id), { template: 'addon_expired', title: 'Extra-work request expired', body: 'The customer did not respond in time. Send it again if it is still needed.', data: { bookingId: r.booking_id } });
+      await this.notifier.tpl(r.customer_id, 'addon_expired', {}, { data: { bookingId: r.booking_id } });
+      await this.notifier.tpl(await this.notifier.proUsers(r.professional_id), 'addon_expired_pro', {}, { data: { bookingId: r.booking_id } });
     }
     return rows.length;
   }
@@ -355,7 +351,7 @@ export class BookingService {
        ON CONFLICT (booking_id) DO UPDATE SET method=EXCLUDED.method, amount=EXCLUDED.amount, reference=EXCLUDED.reference, recorded_at=now(), recorded_by=EXCLUDED.recorded_by`,
       [bookingId, u.id, i.method, b.total, i.method === 'mpesa' ? ref : null]);
     await this.db.query('UPDATE bookings SET direct_method=$2 WHERE id=$1', [bookingId, i.method]);
-    await this.notifier.send(b.customer_id, { template: 'direct_payment_recorded', title: 'Payment recorded', body: `Your professional recorded ${kes(b.total)} received by ${i.method === 'cash' ? 'cash' : 'M-Pesa'}. Please confirm once you are happy with the work.`, data: { bookingId } });
+    await this.notifier.tpl(b.customer_id, 'direct_payment_recorded', { amount: kes(b.total), method: i.method === 'cash' ? 'cash' : 'M-Pesa' }, { data: { bookingId } });
     return { recorded: true, amount: Number(b.total), method: i.method };
   }
 }
@@ -372,11 +368,9 @@ export class BookingController {
       : this.db.query('SELECT * FROM bookings WHERE customer_id=$1 ORDER BY created_at DESC LIMIT 100', [u.id]);
   }
 
-    @Get('payment-modes') paymentModes(@Query('professionalId') professionalId: string, @Query('subtotal') subtotal: string, @Query('kind') kind = 'instant', @Query('professionalServiceId') serviceId?: string) {
+  @Get('payment-modes') paymentModes(@Query('professionalId') professionalId: string, @Query('subtotal') subtotal: string, @Query('kind') kind = 'instant', @Query('professionalServiceId') serviceId?: string) {
     return this.s.modesFor(professionalId, Number(subtotal) || 0, kind, serviceId);
   }
-
-
   @Get(':id') async get(@CurrentUser() u: AuthUser, @Param('id') id: string) {
     const b = await this.db.one<any>('SELECT *, ST_Y(location::geometry) lat, ST_X(location::geometry) lng FROM bookings WHERE id=$1', [id]);
     if (!b) throw new NotFoundException();

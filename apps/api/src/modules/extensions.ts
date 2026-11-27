@@ -22,10 +22,10 @@ export class NotifyService {
     const rows = await this.db.query<any>(`SELECT n.*, u.phone, u.email, u.whatsapp_opt_in FROM notifications n JOIN users u ON u.id=n.user_id WHERE n.delivered_at IS NULL ORDER BY n.created_at LIMIT $1`, [limit]);
     for (const n of rows) {
       const off = new Set((await this.db.query<any>(`SELECT channel FROM notification_preferences WHERE user_id=$1 AND template=$2 AND NOT enabled`, [n.user_id, n.template])).map((r) => r.channel));
-            const essential = !!TEMPLATES.find((t) => t.key === n.template)?.essential; // safety/money alerts can't be muted
+      const essential = !!TEMPLATES.find((t) => t.key === n.template)?.essential; // safety/money alerts can't be muted
       const want = (ch: string) => (n.channels as string[]).includes(ch) && (essential || !off.has(ch));
       try {
-                if (want('sms') && n.phone) await this.sms.send(n.phone, String((n.data as any)?._sms ?? `${n.title}: ${n.body}`).slice(0, 300));
+        if (want('sms') && n.phone) await this.sms.send(n.phone, String((n.data as any)?._sms ?? `${n.title}: ${n.body}`).slice(0, 300));
         if (want('email') && n.email) await this.email.send(n.email, n.title ?? 'FundiLink', emailHtml(n.title ?? 'FundiLink', n.body ?? ''));
         if (want('push')) {
           const t = (await this.db.query<any>('SELECT token FROM push_tokens WHERE user_id=$1', [n.user_id])).map((r) => r.token);
@@ -41,10 +41,12 @@ export class NotifyService {
   /** Daily: remind professionals whose credentials expire within 30 days; expire lapsed ones. */
   async verificationExpiry() {
     await this.db.query(`UPDATE professional_verifications SET state='expired' WHERE state='approved' AND expires_at < now()`);
+    const tp = await tplBuild('credential_expiring');
     await this.db.query(`INSERT INTO notifications (user_id, template, title, body, channels)
-      SELECT p.user_id,'credential_expiring','A credential is expiring soon','Upload a renewed document to keep your verified badge.','{in_app,push,email}'
+      SELECT p.user_id,'credential_expiring',$1::text,$2::text,'{in_app,push,email}'
       FROM professional_verifications v JOIN professional_profiles p ON p.id=v.professional_id
-      WHERE v.state='approved' AND v.expires_at BETWEEN now() AND now()+interval '30 days' AND v.expiry_notified_at IS NULL`);
+      WHERE v.state='approved' AND v.expires_at BETWEEN now() AND now()+interval '30 days' AND v.expiry_notified_at IS NULL`,
+      [tp?.title ?? 'A credential is expiring soon', tp?.body ?? 'Upload a renewed document to keep your verified badge.']);
     await this.db.query(`UPDATE professional_verifications SET expiry_notified_at=now() WHERE state='approved' AND expires_at BETWEEN now() AND now()+interval '30 days' AND expiry_notified_at IS NULL`);
   }
 
@@ -269,7 +271,11 @@ export class TeamController {
     const i = parse(z.object({ phone: z.string().min(7), role: z.enum(['admin', 'operations', 'support', 'technician']) }), b);
     const p = await this.ownBusiness(u);
     const target = await this.db.one<any>('SELECT id FROM users WHERE phone=$1', [i.phone]);
-    if (!target) { await this.sms.send(i.phone, `${p.display_name} invited you to join their team on FundiLink. Create an account with this number to accept.`); return { invited: true }; }
+    if (!target) {
+      const tp = await tplBuild('team_invite', { business: p.display_name });
+      await this.sms.send(i.phone, tp?.body ?? `${p.display_name} invited you to join their team on FundiLink. Create an account with this number to accept.`);
+      return { invited: true };
+    }
     await this.db.query(`INSERT INTO business_members (business_id, user_id, role) VALUES ($1,$2,$3) ON CONFLICT (business_id,user_id) DO UPDATE SET role=EXCLUDED.role`, [p.id, target.id, i.role]);
     await this.audit.log(u, { action: 'team.add', kind: 'business', id: p.id, after: { user: target.id, role: i.role } });
     return { added: true };
@@ -286,11 +292,12 @@ export class TeamController {
     const p = await this.ownBusiness(u);
     const bk = await this.db.one<any>('SELECT * FROM bookings WHERE id=$1 AND professional_id=$2', [id, p.id]); if (!bk) throw new NotFoundException();
     const ok = await this.db.one(`SELECT 1 FROM business_members WHERE business_id=$1 AND user_id=$2 AND role='technician'`, [p.id, i.technicianId]); if (!ok) throw new BadRequestException('Not a technician on this team');
+    const tp = await tplBuild('job_assigned', { reference: bk.reference });
     await this.db.tx(async (c) => {
       await c.query('UPDATE booking_assignments SET active=false WHERE booking_id=$1 AND active', [id]);
       await c.query('INSERT INTO booking_assignments (booking_id, technician_id, assigned_by) VALUES ($1,$2,$3)', [id, i.technicianId, u.id]);
       await c.query('UPDATE bookings SET assigned_user_id=$2 WHERE id=$1', [id, i.technicianId]);
-      await c.query(`INSERT INTO notifications (user_id, template, title, body, data, channels) VALUES ($1,'job_assigned','New job assigned',$2,$3,'{in_app,push,sms}')`, [i.technicianId, `Booking ${bk.reference} is yours.`, JSON.stringify({ bookingId: id })]);
+      await c.query(`INSERT INTO notifications (user_id, template, title, body, data, channels) VALUES ($1,'job_assigned',$2,$3,$4,'{in_app,push,sms}')`, [i.technicianId, tp?.title ?? 'New job assigned', tp?.body ?? `Booking ${bk.reference} is yours.`, JSON.stringify({ bookingId: id })]);
     });
     return { ok: true };
   }

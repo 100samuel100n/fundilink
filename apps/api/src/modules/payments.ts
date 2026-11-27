@@ -275,8 +275,8 @@ export class PaymentService {
       await this.bookings.move(c, b.id, 'scheduled', 'system', null, {});
     }
     after.push(
-      () => this.notifier.send(b.customer_id, { template: 'payment_received', title: 'Payment received', body: `${kes(gross)} is held safely until the job is done. We have asked your professional to accept.`, data: { bookingId: b.id } }),
-      async () => this.notifier.send(await this.notifier.proUsers(b.professional_id), { template: 'booking_request', title: b.kind === 'emergency' ? 'Emergency request' : 'New booking request', body: `${b.description?.slice(0, 80) ?? 'A customer wants to book you'} · ${kes(b.professional_net)} after commission. Accept soon: requests expire.`, data: { bookingId: b.id }, channels: b.kind === 'emergency' ? ['in_app', 'push', 'sms'] : ['in_app', 'push'] }),
+      () => this.notifier.tpl(b.customer_id, 'payment_received', { amount: kes(gross), reference: b.reference }, { data: { bookingId: b.id } }),
+      async () => this.notifier.tpl(await this.notifier.proUsers(b.professional_id), 'booking_request', { label: b.kind === 'emergency' ? 'Emergency request' : 'New booking request', description: b.description?.slice(0, 80) ?? 'A customer wants to book you', net: kes(b.professional_net) }, { data: { bookingId: b.id }, channels: b.kind === 'emergency' ? ['in_app', 'push', 'sms'] : ['in_app', 'push'] }),
     );
   }
 
@@ -292,8 +292,8 @@ export class PaymentService {
     await c.query(`UPDATE quotation_revisions SET payment_status='paid', paid_at=now(), payment_intent_id=$2 WHERE id=$1`, [r.id, pi.id]);
     await c.query(`INSERT INTO receipts (payment_intent_id, number) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [pi.id, receiptNo()]);
     after.push(
-      () => this.notifier.send(b.customer_id, { template: 'addon_paid', title: 'Extra work paid', body: `${kes(gross)} received for the extra work on ${b.reference}. Receipt issued.`, data: { bookingId: b.id, revisionId: r.id } }),
-      async () => this.notifier.send(await this.notifier.proUsers(b.professional_id), { template: 'addon_paid', title: 'Extra work approved and paid', body: `The customer paid ${kes(gross)} for the extra work. You can go ahead.`, data: { bookingId: b.id, revisionId: r.id } }),
+      () => this.notifier.tpl(b.customer_id, 'addon_paid', { amount: kes(gross), reference: b.reference }, { data: { bookingId: b.id, revisionId: r.id } }),
+      async () => this.notifier.tpl(await this.notifier.proUsers(b.professional_id), 'addon_paid_pro', { amount: kes(gross) }, { data: { bookingId: b.id, revisionId: r.id } }),
     );
   }
 
@@ -304,7 +304,7 @@ export class PaymentService {
     await c.query(`INSERT INTO receipts (payment_intent_id, number) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [pi.id, receiptNo()]);
     after.push(async () => {
       const bal = await this.wallet.balance(proId);
-      await this.notifier.send(await this.notifier.proUsers(proId), { template: 'wallet_topup', title: 'Wallet topped up', body: `${kes(gross)} added. Your balance is ${kes(bal)}.`, data: { balance: bal } });
+      await this.notifier.tpl(await this.notifier.proUsers(proId), 'wallet_topup', { amount: kes(gross), balance: kes(bal) }, { data: { balance: bal } });
     });
   }
 
@@ -335,7 +335,7 @@ export class PaymentService {
       [pi.booking_id, pi.id, gross, why, pi.user_id])).rows[0];
     after.push(async () => {
       await this.executeRefund(refund.id, null);
-      await this.notifier.send(pi.user_id, { template: 'payment_refunded', title: 'Payment being returned', body: `${kes(gross)} arrived after your request was closed, so we are sending it back to your M-Pesa.`, data: { bookingId: pi.booking_id } });
+      await this.notifier.tpl(pi.user_id, 'payment_returned', { amount: kes(gross) }, { data: { bookingId: pi.booking_id } });
     });
   }
 
@@ -352,7 +352,7 @@ export class PaymentService {
   }
 
   /** Customer confirmed (or window lapsed): move money from "held" to payable-out via a settlement record. */
-   async queueSettlement(bookingId: string) {
+  async queueSettlement(bookingId: string) {
     let recovered = 0; let proId = '';
     await this.db.tx(async (c) => {
       const b = (await c.query('SELECT * FROM bookings WHERE id=$1 FOR UPDATE', [bookingId])).rows[0];
@@ -372,12 +372,12 @@ export class PaymentService {
         [b.professional_id, acct?.id ?? null, pay, `settle:${bookingId}`])).rows[0];
       if (s) await c.query('INSERT INTO settlement_items (settlement_id, booking_id, amount) VALUES ($1,$2,$3)', [s.id, bookingId, pay]);
     });
-    if (recovered > 0) void this.notifier.send(await this.notifier.proUsers(proId), { template: 'wallet_netting', title: 'Wallet balance recovered', body: `${kes(recovered)} from this job cleared the commission you owed on pay-on-site jobs.`, data: { bookingId } }).catch(() => {});
+    if (recovered > 0) void this.notifier.tpl(await this.notifier.proUsers(proId), 'wallet_netting', { amount: kes(recovered) }, { data: { bookingId } }).catch(() => {});
     // try to pay straight away; the housekeeping job retries anything that does not go through
     const s = await this.db.one<any>(`SELECT id FROM settlements WHERE idempotency_key=$1`, [`settle:${bookingId}`]);
     if (s) await this.processSettlement(s.id).catch((e) => this.log.warn(`instant settlement ${s.id}: ${e}`));
   }
-  
+
   /** Worker: pay out pending settlements through the provider. Claimed atomically so two workers can never pay twice. */
   async processSettlement(settlementId: string) {
     const s = await this.db.one<any>(
@@ -406,7 +406,7 @@ export class PaymentService {
       await postLedger(c, `payout:${s.id}`, 'payout', null, [{ account: proAcct(s.professional_id), debit: Number(s.amount) }, { account: PSP, credit: Number(s.amount) }]);
       const items = (await c.query('SELECT booking_id FROM settlement_items WHERE settlement_id=$1', [s.id])).rows;
       for (const it of items) if (it.booking_id) await this.bookings.move(c, it.booking_id, 'settled', 'system', null, {});
-      after.push(async () => this.notifier.send(await this.notifier.proUsers(s.professional_id), { template: 'payout_sent', title: 'Payout sent', body: `${kes(s.amount)} is on its way to your M-Pesa${receipt ? ` (ref ${receipt})` : ''}.`, data: { settlementId: s.id } }));
+      after.push(async () => this.notifier.tpl(await this.notifier.proUsers(s.professional_id), 'payout_sent', { amount: kes(s.amount), receiptRef: receipt ? ` (ref ${receipt})` : '' }, { data: { settlementId: s.id } }));
     });
     for (const f of after) await f().catch(() => {});
   }
@@ -420,7 +420,7 @@ export class PaymentService {
     }
     if (r.success) { await this.finalizeSettlement(s.id, r.transactionId || undefined); return; }
     await this.db.query(`UPDATE settlements SET status='failed', failure_reason=$2 WHERE id=$1 AND status='processing'`, [s.id, `${r.resultDesc}`.slice(0, 300)]);
-    await this.notifier.send(await this.notifier.proUsers(s.professional_id), { template: 'payout_failed', title: 'Payout could not be sent', body: 'Check that your payout M-Pesa number is correct. We will retry automatically.', data: { settlementId: s.id } });
+    await this.notifier.tpl(await this.notifier.proUsers(s.professional_id), 'payout_failed', {}, { data: { settlementId: s.id } });
   }
 
   /** Finance: retry a payout stuck in processing/failed. Uses a fresh attempt number so Safaricom sees a new request. */
@@ -453,8 +453,8 @@ export class PaymentService {
 
   private async walletNudge(proId: string, ref: string, commission: number) {
     const s = await this.wallet.settings(), bal = await this.wallet.balance(proId);
-    if (bal <= s.minBalance) await this.notifier.send(await this.notifier.proUsers(proId), { template: 'wallet_empty', title: 'Wallet empty: top up to keep taking pay-on-site jobs', body: `${kes(commission)} commission for ${ref} was taken from your wallet. Balance: ${kes(bal)}. In-app paid jobs are unaffected.`, data: { balance: bal }, channels: ['in_app', 'push', 'sms'] });
-    else if (bal <= s.lowAlert) await this.notifier.send(await this.notifier.proUsers(proId), { template: 'wallet_low', title: 'Wallet running low', body: `${kes(bal)} left after ${ref}. Top up with M-Pesa to keep receiving pay-on-site jobs.`, data: { balance: bal } });
+    if (bal <= s.minBalance) await this.notifier.tpl(await this.notifier.proUsers(proId), 'wallet_empty', { commission: kes(commission), reference: ref, balance: kes(bal) }, { data: { balance: bal }, channels: ['in_app', 'push', 'sms'] });
+    else if (bal <= s.lowAlert) await this.notifier.tpl(await this.notifier.proUsers(proId), 'wallet_low', { balance: kes(bal), reference: ref }, { data: { balance: bal } });
   }
 
   /** Finance: credit or debit a wallet by hand (bank-transfer top-ups, goodwill credit, corrections). Always reasoned and audited. */
@@ -552,7 +552,7 @@ export class PaymentService {
         const back = Number((await c.query(`SELECT COALESCE(SUM(amount),0) n FROM refunds WHERE booking_id=$1 AND status='processed'`, [b.id])).rows[0].n);
         await this.bookings.move(c, b.id, back >= paid ? 'refunded' : 'partially_refunded', 'system', null, {});
       }
-      after.push(() => this.notifier.send(r.requested_by, { template: 'payment_refunded', title: 'Refund sent', body: `${kes(amt)} has been returned to your M-Pesa.`, data: { bookingId: r.booking_id } }));
+      after.push(() => this.notifier.tpl(r.requested_by, 'payment_refunded', { amount: kes(amt) }, { data: { bookingId: r.booking_id } }));
     });
     for (const f of after) await f().catch(() => {});
   }

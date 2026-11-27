@@ -5,6 +5,7 @@ import { BookingService } from './bookings.ts';
 import { PaymentService } from './payments.ts';
 import { ProjectService } from './projects.ts';
 import { NotifyService } from './extensions.ts';
+import { tplBuild } from './templates.ts';
 
 /**
  * Background automation via BullMQ (Redis). Each job is idempotent so retries and overlaps are safe.
@@ -44,10 +45,12 @@ export class JobsService implements OnModuleInit {
   /** Unanswered requests expire and the customer is notified (refund follows via the state machine). */
   private async expireRequests() {
     const due = await this.db.query<any>(`SELECT id, customer_id FROM bookings WHERE status='awaiting_acceptance' AND request_expires_at < now() LIMIT 100`);
+    const tp = await tplBuild('request_expired');
     for (const b of due) {
       const ok = await this.db.tx((c) => this.bookings.move(c, b.id, 'cancelled', 'system', null, { reason: 'Professional did not respond in time' })).then(() => true).catch((e) => { this.log.warn(String(e)); return false; });
       if (ok) this.pay.autoRefund(b.id, 'Professional did not respond in time').catch((e) => this.log.error(`expiry refund ${b.id}: ${e}`));
-      await this.db.query(`INSERT INTO notifications (user_id, template, title, body, data) VALUES ($1,'request_expired','Request expired','The professional did not respond in time. Your payment will be refunded; try another professional.',$2)`, [b.customer_id, JSON.stringify({ bookingId: b.id })]);
+      await this.db.query(`INSERT INTO notifications (user_id, template, title, body, data) VALUES ($1,'request_expired',$2,$3,$4)`,
+        [b.customer_id, tp?.title ?? 'Request expired', tp?.body ?? 'The professional did not respond in time. Your payment will be refunded; try another professional.', JSON.stringify({ bookingId: b.id })]);
     }
   }
 

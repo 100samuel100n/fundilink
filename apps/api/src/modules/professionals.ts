@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { AuthUser, CurrentUser, Db, Audit, parse, Perm } from '../common/core.ts';
 import { Storage } from '../providers/providers.ts';
+import { tplBuild } from './templates.ts';
 
 const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
@@ -62,11 +63,12 @@ export class ProfessionalService {
   async setPayoutAccount(u: AuthUser, i: { kind: 'mobile_money' | 'bank'; provider: string; accountRef: string; accountName: string }, ip?: string) {
     const p = await this.mine(u.id);
     const prev = await this.db.one<any>('SELECT id, provider, account_name FROM payout_accounts WHERE professional_id=$1 AND active', [p.id]);
+    const tp = await tplBuild('payout_changed');
     await this.db.tx(async (c) => {
       await c.query('UPDATE payout_accounts SET active=false WHERE professional_id=$1', [p.id]);
       await c.query(`INSERT INTO payout_accounts (professional_id, kind, provider, account_ref_encrypted, account_name) VALUES ($1,$2,$3,convert_to($4,'UTF8'),$5)`, [p.id, i.kind, i.provider, i.accountRef, i.accountName]);
       await this.audit.log(u, { action: 'payout_account.change', kind: 'professional', id: p.id, before: prev ?? null, after: { provider: i.provider, accountName: i.accountName }, ip }, c);
-      await c.query(`INSERT INTO notifications (user_id, template, title, body, channels) VALUES ($1,'payout_changed','Payout account changed','If this was not you, contact support immediately.','{in_app,sms,email}')`, [u.id]);
+      await c.query(`INSERT INTO notifications (user_id, template, title, body, channels) VALUES ($1,'payout_changed',$2,$3,'{in_app,sms,email}')`, [u.id, tp?.title ?? 'Payout account changed', tp?.body ?? 'If this was not you, contact support immediately.']);
     });
     return { ok: true };
   }
@@ -93,14 +95,13 @@ export class ProfessionalController {
   constructor(private s: ProfessionalService, private db: Db, private storage: Storage) {}
 
   @Post('onboard') onboard(@CurrentUser() u: AuthUser, @Body() b: unknown) { return this.s.onboard(u, parse(Onboard, b)); }
-    @Get('me') async me(@CurrentUser() u: AuthUser) {
+  @Get('me') async me(@CurrentUser() u: AuthUser) {
     const p = await this.s.mine(u.id);
     const [pt] = await this.db.query('SELECT ST_Y(base_location::geometry) AS lat, ST_X(base_location::geometry) AS lng FROM professional_profiles WHERE id=$1', [p.id]);
     const service_areas = await this.db.query('SELECT county, town, estate FROM professional_service_areas WHERE professional_id=$1', [p.id]);
     return { ...p, lat: pt?.lat ?? null, lng: pt?.lng ?? null, area: p.base_area, service_areas, licenceGaps: await this.s.licenceGaps(p.id) };
   }
-
-    @Put('location') async setLocation(@CurrentUser() u: AuthUser, @Body() b: unknown) {
+  @Put('location') async setLocation(@CurrentUser() u: AuthUser, @Body() b: unknown) {
     const i = parse(z.object({
       lat: z.number().min(-90).max(90), lng: z.number().min(-180).max(180), county: z.string().min(2), area: z.string().optional(),
       maxTravelKm: z.number().positive().max(500).optional(), freeRadiusKm: z.number().min(0).max(500).optional(),
@@ -119,7 +120,6 @@ export class ProfessionalController {
     });
     return { ok: true };
   }
-  
   @Put('services') service(@CurrentUser() u: AuthUser, @Body() b: unknown) { return this.s.upsertService(u, parse(ServiceInput, b)); }
   @Put('payout-account') payout(@CurrentUser() u: AuthUser, @Body() b: unknown) {
     return this.s.setPayoutAccount(u, parse(z.object({ kind: z.enum(['mobile_money', 'bank']), provider: z.string(), accountRef: z.string().min(6), accountName: z.string().min(2) }), b));

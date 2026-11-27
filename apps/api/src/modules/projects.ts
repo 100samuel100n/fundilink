@@ -2,6 +2,7 @@ import { BadRequestException, Body, Controller, ForbiddenException, Get, Injecta
 import { z } from 'zod';
 import { buildInvoice, DEFAULT_FEES, milestoneAmounts, validateMilestones } from '@fundilink/domain';
 import { AuthUser, CurrentUser, Db, parse, postLedger } from '../common/core.ts';
+import { tplBuild } from './templates.ts';
 
 const item = z.object({ label: z.string(), kind: z.enum(['labour', 'materials', 'transport', 'other']), quantity: z.number().positive(), unitAmount: z.number().int().nonnegative() });
 
@@ -16,9 +17,10 @@ export class ProjectService {
         `INSERT INTO projects (customer_id, organization_id, title, scope, address, location, budget) VALUES ($1,$2,$3,$4,$5, ST_SetSRID(ST_MakePoint($6,$7),4326)::geography, $8) RETURNING *`,
         [u.id, i.organizationId ?? null, i.title, i.scope, i.address, i.lng, i.lat, i.budget ?? null])).rows[0];
       const pros = (await c.query(`SELECT id, user_id FROM nearby_professionals($1,$2,25,$3,0,false,8) n JOIN professional_profiles pp USING (id)`, [i.lat, i.lng, i.categoryId])).rows;
+      const tp = await tplBuild('quote_request', { title: i.title });
       for (const pr of pros) {
         await c.query(`INSERT INTO quotations (project_id, professional_id, status) VALUES ($1,$2,'requested') ON CONFLICT DO NOTHING`, [p.id, pr.id]);
-        await c.query(`INSERT INTO notifications (user_id, template, title, body, data, channels) VALUES ($1,'quote_request','New quotation request',$2,$3,'{in_app,push,sms}')`, [pr.user_id, i.title, JSON.stringify({ projectId: p.id })]);
+        await c.query(`INSERT INTO notifications (user_id, template, title, body, data, channels) VALUES ($1,'quote_request',$2,$3,$4,'{in_app,push,sms}')`, [pr.user_id, tp?.title ?? 'New quotation request', tp?.body ?? i.title, JSON.stringify({ projectId: p.id })]);
       }
       return { project: p, invited: pros.length };
     });

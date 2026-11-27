@@ -5,6 +5,7 @@ import * as argon2 from 'argon2';
 import { z } from 'zod';
 import { Db, Public, parse, sha256 } from '../common/core.ts';
 import { Email, Sms } from '../providers/providers.ts';
+import { tplBuild } from './templates.ts';
 
 const OTP_TTL_MIN = 10;
 const MAX_ATTEMPTS = 5;
@@ -23,8 +24,9 @@ export class AuthService {
     await this.db.query(
       `INSERT INTO otp_codes (destination, purpose, code_hash, expires_at) VALUES ($1,$2,$3, now() + ($4 || ' minutes')::interval)`,
       [destination, purpose, await sha256(`${destination}:${purpose}:${code}`), OTP_TTL_MIN]);
-    const text = `Your FundiLink code is ${code}. It expires in ${OTP_TTL_MIN} minutes. Never share it.`;
-    if (destination.includes('@')) await this.email.send(destination, 'Your FundiLink code', `<p>${text}</p>`);
+    const tp = await tplBuild('otp_code', { code, minutes: OTP_TTL_MIN });
+    const text = tp?.body ?? `Your FundiLink code is ${code}. It expires in ${OTP_TTL_MIN} minutes. Never share it.`;
+    if (destination.includes('@')) await this.email.send(destination, tp?.title ?? 'Your FundiLink code', `<p>${text}</p>`);
     else await this.sms.send(destination, text);
     // Demo/testing without an SMS provider: hand the code back so you can finish sign-up. NEVER on when ENABLE_DEMO is off.
     return process.env.ENABLE_DEMO === 'true' && !process.env.TELNYX_API_KEY ? { devCode: code } : { sent: true };

@@ -1,7 +1,7 @@
 import { BadRequestException, Body, Controller, ForbiddenException, Get, Header, Logger, NotFoundException, Param, Post, Put, Query, Req } from '@nestjs/common';
 import { z } from 'zod';
 import { AuthUser, CurrentUser, Db, Audit, Perm, parse } from '../common/core.ts';
-import { SAMPLE_VARS, TEMPLATES, TemplateService, unknownVars } from './templates.ts';
+import { SAMPLE_VARS, TEMPLATES, TemplateService, tplBuild, unknownVars } from './templates.ts';
 
 const lim = (n: unknown) => Math.min(Math.max(Number(n) || 100, 1), 500);
 const csv = (rows: Record<string, unknown>[]) => {
@@ -199,10 +199,11 @@ export class AdminManageController {
   async answer(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() b: unknown) {
     const i = parse(z.object({ body: z.string().min(1), status: z.enum(['pending_user', 'resolved', 'closed', 'open']).default('pending_user') }), b);
     const t = await this.db.one<any>('SELECT user_id FROM support_tickets WHERE id=$1', [id]); if (!t) throw new NotFoundException();
+    const tp = await tplBuild('support_reply', { message: i.body.slice(0, 140) });
     await this.db.tx(async (c) => {
       await c.query('INSERT INTO support_messages (ticket_id, author_id, staff, body) VALUES ($1,$2,true,$3)', [id, u.id, i.body]);
       await c.query('UPDATE support_tickets SET status=$2, assigned_to=COALESCE(assigned_to,$3), updated_at=now() WHERE id=$1', [id, i.status, u.id]);
-      await c.query(`INSERT INTO notifications (user_id, template, title, body, data, channels) VALUES ($1,'support_reply','Support replied',$2,$3,'{in_app,push,email}')`, [t.user_id, i.body.slice(0, 140), JSON.stringify({ ticketId: id })]);
+      await c.query(`INSERT INTO notifications (user_id, template, title, body, data, channels) VALUES ($1,'support_reply',$2,$3,$4,'{in_app,push,email}')`, [t.user_id, tp?.title ?? 'Support replied', tp?.body ?? i.body.slice(0, 140), JSON.stringify({ ticketId: id })]);
     });
     return { ok: true };
   }
@@ -214,52 +215,28 @@ export class AdminManageController {
   equipment() { return this.db.query(`SELECT e.*, p.display_name owner FROM equipment_listings e JOIN professional_profiles p ON p.id=e.professional_id ORDER BY e.created_at DESC LIMIT 200`); }
 
   /* ---- Rich analytics for the overview charts ---- */
-    @Perm('analytics.read') @Get('analytics')
+  @Perm('analytics.read') @Get('analytics')
   async analytics() {
     // Each chart is isolated: one failing query leaves that chart empty instead of failing the whole page, and the log names it.
     const run = (label: string, sql: string) => this.db.query<any>(sql).catch((e: any) => { new Logger('Analytics').error(`"${label}" query failed: ${e?.message ?? e}`); return [] as any[]; });
     const done = `('completed','settlement_pending','settled')`;
     const [revenue, signups, profitable, cancel, conv, ret, pret, resp, liquidity] = await Promise.all([
-      run('revenue', `SELECT date_trunc('month', b.created_at)::date AS month, COALESCE(sum(b.commission + b.customer_fee) FILTER (WHERE b.status IN ${done}), 0)::bigint AS revenue, count(*)::int AS bookings FROM bookings b WHERE b.created_at > now() - interval '12 months' GROUP BY 1 ORDER BY 1`),
-      run('signups', `SELECT date_trunc('month', u.created_at)::date AS month, count(*) FILTER (WHERE r.code='customer')::int AS customers, count(*) FILTER (WHERE r.code='professional')::int AS professionals FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id WHERE u.created_at > now() - interval '12 months' GROUP BY 1 ORDER BY 1`),
-      run('profitable', `SELECT c.name AS category, COALESCE(sum(b.commission + b.customer_fee), 0)::bigint AS revenue, count(*)::int AS bookings FROM bookings b JOIN professional_services ps ON ps.id=b.professional_service_id JOIN services s ON s.id=ps.service_id JOIN categories c ON c.id=s.category_id WHERE b.status IN ${done} GROUP BY 1 ORDER BY 2 DESC LIMIT 10`),
-      run('cancel', `SELECT date_trunc('week', created_at)::date AS week, round(100.0 * count(*) FILTER (WHERE status='cancelled') / NULLIF(count(*), 0), 1) AS cancel_pct FROM bookings WHERE created_at > now() - interval '12 weeks' GROUP BY 1 ORDER BY 1`),
-      run('funnel', `SELECT (SELECT count(*) FROM search_events WHERE created_at > now() - interval '30 days')::int AS searches, (SELECT count(*) FROM bookings WHERE status IN ${done} AND created_at > now() - interval '30 days')::int AS completed`),
-      run('repeat', `WITH c AS (SELECT customer_id, count(*) AS n FROM bookings WHERE status IN ${done} GROUP BY 1) SELECT round(100.0 * count(*) FILTER (WHERE n > 1) / NULLIF(count(*), 0), 1) AS customer_repeat_pct FROM c`),
-      run('pro-active', `SELECT round(100.0 * count(DISTINCT professional_id) FILTER (WHERE created_at > now() - interval '30 days') / NULLIF(count(DISTINCT professional_id), 0), 1) AS professional_active_30d_pct FROM bookings`),
-      run('acceptance', `SELECT round(100.0 * count(*) FILTER (WHERE status NOT IN ('declined','cancelled')) / NULLIF(count(*), 0), 1) AS request_acceptance_pct FROM bookings WHERE status NOT IN ('draft','pending_payment')`),
+      run('revenue', `SELECT date_trunc('month', b.created_at)::date AS month, COALESCE(sum(b.commission+b.customer_fee) FILTER (WHERE b.status IN ${done}),0)::bigint AS revenue, count(*)::int AS bookings FROM bookings b WHERE b.created_at > now()-interval '12 months' GROUP BY 1 ORDER BY 1`),
+      run('signups', `SELECT date_trunc('month', u.created_at)::date AS month, count(*) FILTER (WHERE r.code='customer')::int AS customers, count(*) FILTER (WHERE r.code='professional')::int AS professionals FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id WHERE u.created_at > now()-interval '12 months' GROUP BY 1 ORDER BY 1`),
+      run('profitable', `SELECT c.name AS category, COALESCE(sum(b.commission+b.customer_fee),0)::bigint AS revenue, count(*)::int AS bookings FROM bookings b JOIN professional_services ps ON ps.id=b.professional_service_id JOIN services s ON s.id=ps.service_id JOIN categories c ON c.id=s.category_id WHERE b.status IN ${done} GROUP BY 1 ORDER BY 2 DESC LIMIT 10`),
+      run('cancel', `SELECT date_trunc('week', created_at)::date AS week, round(100.0*count(*) FILTER (WHERE status='cancelled')/NULLIF(count(*),0),1) AS cancel_pct FROM bookings WHERE created_at > now()-interval '12 weeks' GROUP BY 1 ORDER BY 1`),
+      run('funnel', `SELECT (SELECT count(*) FROM search_events WHERE created_at > now()-interval '30 days')::int AS searches, (SELECT count(*) FROM bookings WHERE status IN ${done} AND created_at > now()-interval '30 days')::int AS completed`),
+      run('repeat', `WITH c AS (SELECT customer_id, count(*) AS n FROM bookings WHERE status IN ${done} GROUP BY 1) SELECT round(100.0*count(*) FILTER (WHERE n>1)/NULLIF(count(*),0),1) AS customer_repeat_pct FROM c`),
+      run('pro-active', `SELECT round(100.0*count(DISTINCT professional_id) FILTER (WHERE created_at > now()-interval '30 days')/NULLIF(count(DISTINCT professional_id),0),1) AS professional_active_30d_pct FROM bookings`),
+      run('acceptance', `SELECT round(100.0*count(*) FILTER (WHERE status NOT IN ('declined','cancelled') OR status IS NULL)/NULLIF(count(*),0),1) AS request_acceptance_pct FROM bookings WHERE status NOT IN ('draft','pending_payment')`),
       run('liquidity', `SELECT county, count(*)::int AS active_professionals FROM professional_profiles WHERE status='active' GROUP BY 1 ORDER BY 2 DESC LIMIT 20`),
     ]);
     const f = conv[0] ?? { searches: 0, completed: 0 };
     return { revenue, signups, profitable, cancel, funnel: { ...f, searchToBookingPct: f.searches ? Number(((f.completed / f.searches) * 100).toFixed(1)) : 0 }, retention: { ...(ret[0] ?? {}), ...(pret[0] ?? {}) }, requestAcceptance: resp[0] ?? {}, liquidity };
   }
 
-  /* ---- Settings, notification templates, exports (exports are audited) ---- */
-  @Perm('settings.write') @Get('settings')
-  settings() { return this.db.query('SELECT key, value, country_code, updated_at FROM platform_settings ORDER BY key'); }
-  @Perm('settings.write') @Put('settings/:key')
-  async setSetting(@CurrentUser() u: AuthUser, @Param('key') key: string, @Body() b: unknown) {
-    const i = parse(z.object({ value: z.any(), reason: z.string().min(5) }), b);
-    if (!/^[a-z0-9_.-]+$/.test(key)) throw new BadRequestException('Bad key');
-    const prev = await this.db.one('SELECT value FROM platform_settings WHERE key=$1', [key]);
-    await this.db.query(`INSERT INTO platform_settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, [key, JSON.stringify(i.value)]);
-    await this.audit.log(u, { action: 'setting.change', kind: 'platform_setting', id: key, before: prev, after: i.value, reason: i.reason }); return { ok: true };
-  }
-  @Perm('data.export') @Get('export/:kind') @Header('Content-Type', 'text/csv; charset=utf-8')
-  async exportCsv(@CurrentUser() u: AuthUser, @Param('kind') kind: string, @Req() req: any) {
-    const q: Record<string, string> = {
-      bookings: `SELECT reference, kind, status, total, commission, professional_net, created_at FROM bookings ORDER BY created_at DESC LIMIT 50000`,
-      transactions: `SELECT t.id, t.kind, t.created_at, e.account, e.debit, e.credit FROM ledger_transactions t JOIN ledger_entries e ON e.transaction_id=t.id ORDER BY t.id DESC LIMIT 100000`,
-      customers: `SELECT u.id, u.full_name, u.phone, u.email, u.created_at FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id AND r.code='customer' LIMIT 50000`,
-    };
-    if (!q[kind]) throw new BadRequestException('Unknown export');
-    if (kind === 'customers' && !u.perms.includes('*') && !u.perms.includes('customers.read')) throw new ForbiddenException('Missing customers.read');
-    const rows = await this.db.query(q[kind]);
-    await this.audit.log(u, { action: 'data.export', kind: 'export', id: kind, after: { rows: rows.length }, ip: req.ip, device: req.headers['user-agent'] });
-    return csv(rows);
-  }
-
-    @Perm('settings.write') @Get('templates')
+  /* ---- Notification templates: the catalogue of every message the platform sends, with admin-editable wording ---- */
+  @Perm('settings.write') @Get('templates')
   async templates() {
     const rows = await this.db.query<any>(`SELECT key, value FROM platform_settings WHERE key LIKE 'template.%'`);
     const overrides: Record<string, { title?: string; body?: string; sms?: string }> = {};
@@ -290,6 +267,31 @@ export class AdminManageController {
     await this.audit.log(u, { action: 'template.reset', kind: 'notification_template', id: key, before: prev, after: null, reason: i.reason, ip: req.ip });
     TemplateService.instance?.clear(key);
     return { ok: true };
+  }
+
+  /* ---- Settings and exports (exports are audited) ---- */
+  @Perm('settings.write') @Get('settings')
+  settings() { return this.db.query('SELECT key, value, country_code, updated_at FROM platform_settings ORDER BY key'); }
+  @Perm('settings.write') @Put('settings/:key')
+  async setSetting(@CurrentUser() u: AuthUser, @Param('key') key: string, @Body() b: unknown) {
+    const i = parse(z.object({ value: z.any(), reason: z.string().min(5) }), b);
+    if (!/^[a-z0-9_.-]+$/.test(key)) throw new BadRequestException('Bad key');
+    const prev = await this.db.one('SELECT value FROM platform_settings WHERE key=$1', [key]);
+    await this.db.query(`INSERT INTO platform_settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`, [key, JSON.stringify(i.value)]);
+    await this.audit.log(u, { action: 'setting.change', kind: 'platform_setting', id: key, before: prev, after: i.value, reason: i.reason }); return { ok: true };
+  }
+  @Perm('data.export') @Get('export/:kind') @Header('Content-Type', 'text/csv; charset=utf-8')
+  async exportCsv(@CurrentUser() u: AuthUser, @Param('kind') kind: string, @Req() req: any) {
+    const q: Record<string, string> = {
+      bookings: `SELECT reference, kind, status, total, commission, professional_net, created_at FROM bookings ORDER BY created_at DESC LIMIT 50000`,
+      transactions: `SELECT t.id, t.kind, t.created_at, e.account, e.debit, e.credit FROM ledger_transactions t JOIN ledger_entries e ON e.transaction_id=t.id ORDER BY t.id DESC LIMIT 100000`,
+      customers: `SELECT u.id, u.full_name, u.phone, u.email, u.created_at FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id AND r.code='customer' LIMIT 50000`,
+    };
+    if (!q[kind]) throw new BadRequestException('Unknown export');
+    if (kind === 'customers' && !u.perms.includes('*') && !u.perms.includes('customers.read')) throw new ForbiddenException('Missing customers.read');
+    const rows = await this.db.query(q[kind]);
+    await this.audit.log(u, { action: 'data.export', kind: 'export', id: kind, after: { rows: rows.length }, ip: req.ip, device: req.headers['user-agent'] });
+    return csv(rows);
   }
 }
 
