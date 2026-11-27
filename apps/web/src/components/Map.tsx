@@ -1,62 +1,85 @@
 'use client';
-import React, { useEffect } from 'react';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
-import { MapContainer, Marker, Polyline, Popup, TileLayer, useMap } from 'react-leaflet';
+import React, { useEffect, useRef } from 'react';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import type { LatLng } from '@fundilink/sdk';
+import { ensure3dBuildings, liveDotEl, ll, palette, proPinEl, resolveStyle, setLine, useMapTheme, widthByZoom } from './mapKit';
 
 export interface MapMarker { id: string; lat: number; lng: number; label: string; href?: string; kind?: 'pro' | 'dest' | 'live' }
-const BRAND = '#0FA192';
-
-const pin = (kind: MapMarker['kind'] = 'pro', stale = false) => L.divIcon({
-  className: '',
-  html: `<div style="width:${kind === 'live' ? 22 : 18}px;height:${kind === 'live' ? 22 : 18}px;border-radius:50%;background:${kind === 'dest' ? '#142A3B' : stale ? '#94A3B8' : BRAND};border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.35)${kind === 'live' ? `;outline:6px solid ${stale ? 'rgba(148,163,184,.3)' : 'rgba(22,140,131,.25)'}` : ''}"></div>`,
-  iconSize: [22, 22], iconAnchor: [11, 11],
-});
 
 /**
- * Stable camera: fit everything once, then only pan when the live marker drifts near the edge of the view.
- * The map never recentres on every GPS tick, so it does not jump around while the customer is looking at it.
+ * General-purpose vector map (explore results, profile service area). Same props as the old Leaflet map.
+ * The live journey screen uses TrackMap instead.
  */
-function Fit({ points, follow, fitKey }: { points: LatLng[]; follow?: LatLng | null; fitKey?: string | number }) {
-  const map = useMap();
-  const fitted = React.useRef<string | number | undefined>(undefined);
-  useEffect(() => {
-    if (fitted.current !== fitKey) {
-      fitted.current = fitKey;
-      if (points.length > 1) map.fitBounds(points.map((p) => [p.lat, p.lng] as [number, number]), { padding: [48, 48], maxZoom: 16 });
-      else if (points.length === 1) map.setView([points[0].lat, points[0].lng], 14);
-      return;
-    }
-    if (follow && !map.getBounds().pad(-0.2).contains([follow.lat, follow.lng])) map.panTo([follow.lat, follow.lng], { animate: true, duration: 0.8 });
-  }, [map, follow?.lat, follow?.lng, fitKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  return null;
-}
-
 export default function MapView({ center, markers = [], route, trail, live, className = 'mapbox', stale = false, fitKey }: {
   center: LatLng; markers?: MapMarker[]; route?: LatLng[]; trail?: LatLng[]; live?: LatLng | null; className?: string; stale?: boolean; fitKey?: string | number;
 }) {
-  const pts = [...markers, ...(live ? [{ ...live }] : []), ...(route ?? [])].map((m) => ({ lat: m.lat, lng: m.lng }));
-  const line = (a?: LatLng[]) => (a ?? []).map((p) => [p.lat, p.lng] as [number, number]);
-  return (
-    <div className={className} role="region" aria-label="Map">
-      <MapContainer center={[center.lat, center.lng]} zoom={12} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
-        <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-        {route && route.length > 1 ? (
-          <>
-            <Polyline positions={line(route)} pathOptions={{ color: '#B5DCD8', weight: 11, opacity: 0.9 }} />
-            <Polyline positions={line(route)} pathOptions={{ color: BRAND, weight: 6, opacity: 1 }} />
-          </>
-        ) : null}
-        {trail && trail.length > 1 ? <Polyline positions={line(trail)} pathOptions={{ color: '#142A3B', weight: 3, dashArray: '2 8' }} /> : null}
-        {markers.map((m) => (
-          <Marker key={m.id} position={[m.lat, m.lng]} icon={pin(m.kind)}>
-            <Popup>{m.href ? <a href={m.href}>{m.label}</a> : m.label}</Popup>
-          </Marker>
-        ))}
-        {live ? <Marker position={[live.lat, live.lng]} icon={pin('live', stale)} zIndexOffset={1000} /> : null}
-        <Fit points={pts} follow={live} fitKey={fitKey ?? markers.length} />
-      </MapContainer>
-    </div>
-  );
+  const host = useRef<HTMLDivElement>(null);
+  const map = useRef<maplibregl.Map | null>(null);
+  const pins = useRef<maplibregl.Marker[]>([]);
+  const liveM = useRef<maplibregl.Marker | null>(null);
+  const fitted = useRef<string | number | undefined>(undefined);
+  const theme = useMapTheme(); const themeRef = useRef(theme); themeRef.current = theme;
+  const latest = useRef({ route, trail }); latest.current = { route, trail };
+
+  const lines = () => {
+    const m = map.current; if (!m || !m.isStyleLoaded()) return;
+    const c = palette(themeRef.current); const w = widthByZoom(3, 6, 12);
+    setLine(m, 'm-case', (latest.current.route ?? []).map(ll), { 'line-color': c.casing, 'line-width': widthByZoom(6, 11, 20) });
+    setLine(m, 'm-route', (latest.current.route ?? []).map(ll), { 'line-color': c.route, 'line-width': w });
+    setLine(m, 'm-trail', (latest.current.trail ?? []).map(ll), { 'line-color': c.trail, 'line-width': 2.5, 'line-dasharray': [0.5, 2.5], 'line-opacity': 0.6 });
+    ensure3dBuildings(m, themeRef.current);
+  };
+
+  useEffect(() => {
+    if (!host.current) return;
+    const st = resolveStyle(themeRef.current);
+    const m = new maplibregl.Map({ container: host.current, style: st.url, center: ll(center), zoom: 12, attributionControl: false, cooperativeGestures: false });
+    host.current.classList.toggle('tint', st.tint);
+    m.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+    m.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
+    m.on('style.load', lines); map.current = m;
+    return () => { pins.current.forEach((x) => x.remove()); liveM.current?.remove(); m.remove(); map.current = null; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { const m = map.current; if (!m) return; const st = resolveStyle(theme); host.current?.classList.toggle('tint', st.tint); m.setStyle(st.url); }, [theme]);
+
+  // markers
+  useEffect(() => {
+    const m = map.current; if (!m) return;
+    pins.current.forEach((x) => x.remove());
+    pins.current = markers.map((k) => {
+      const mk = new maplibregl.Marker({ element: proPinEl(k.kind), anchor: 'center' }).setLngLat([k.lng, k.lat]);
+      const box = document.createElement('div');
+      if (k.href) { const a = document.createElement('a'); a.href = k.href; a.textContent = k.label; box.appendChild(a); } else box.textContent = k.label;
+      mk.setPopup(new maplibregl.Popup({ offset: 16, closeButton: false, className: 'fm-popup' }).setDOMContent(box));
+      return mk.addTo(m);
+    });
+  }, [markers]);
+
+  // live dot
+  useEffect(() => {
+    const m = map.current; if (!m) return;
+    if (!live) { liveM.current?.remove(); liveM.current = null; return; }
+    if (!liveM.current) liveM.current = new maplibregl.Marker({ element: liveDotEl(stale) }).setLngLat(ll(live)).addTo(m);
+    else { liveM.current.setLngLat(ll(live)); liveM.current.getElement().classList.toggle('stale', stale); }
+  }, [live?.lat, live?.lng, stale]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => { lines(); }, [route, trail]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // frame everything once per fitKey, then only pan if the live dot drifts toward the edge
+  useEffect(() => {
+    const m = map.current; if (!m) return;
+    const pts = [...markers, ...(live ? [live] : []), ...(route ?? [])];
+    const key = fitKey ?? markers.length;
+    if (fitted.current !== key) {
+      fitted.current = key;
+      if (pts.length > 1) { const b = new maplibregl.LngLatBounds(); pts.forEach((p) => b.extend([p.lng, p.lat])); m.fitBounds(b, { padding: 56, maxZoom: 16, duration: 700 }); }
+      else if (pts.length === 1) m.easeTo({ center: [pts[0].lng, pts[0].lat], zoom: 14, duration: 700 });
+      return;
+    }
+    if (live && !m.getBounds().contains([live.lng, live.lat])) m.easeTo({ center: [live.lng, live.lat], duration: 800 });
+  }, [markers, live?.lat, live?.lng, fitKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return <div className={className} role="region" aria-label="Map"><div ref={host} style={{ width: '100%', height: '100%' }} /></div>;
 }

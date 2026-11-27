@@ -45,6 +45,8 @@ export function Shell({ links, children, variant }: { links: NavLink[]; children
   const [more, setMore] = React.useState(false);
   const cur = (l: NavLink) => path === l.href || (l.href.split('/').length > 2 && path.startsWith(l.href));
   const primary = links.filter((l) => l.icon).slice(0, 4);
+  // The live journey screen is a standalone full-screen experience: no sidebar, no bottom nav, no page chrome.
+  if (/\/track\/[^/]+\/?$/.test(path)) return <>{children}</>;
   return (
     <div className={variant ? `shell ${variant}` : 'shell'}>
       <nav className="side" aria-label="Section">
